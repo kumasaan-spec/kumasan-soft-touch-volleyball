@@ -1,3 +1,5 @@
+import { createCardKey, createRoundRobinPairs } from './roundRobin'
+import { normalizeTeamNames } from './teamUtils'
 import type {
   CourtAssignment,
   ScheduleGenerationInput,
@@ -7,11 +9,9 @@ import type {
   Team,
 } from './types'
 
-const BYE_TEAM_INDEX = -1
 const CANDIDATE_WINDOW_SIZE = 96
 const TWO_COURTS = ['A', 'B'] as const
 
-type RoundRobinPair = readonly [number, number]
 type TwoCourtId = (typeof TWO_COURTS)[number]
 
 type PendingMatch = {
@@ -43,75 +43,6 @@ type SlotPlan = {
   selectedIndexes: SelectedMatchIndexes
   courtPlans: CourtPlan[]
   score: number
-}
-
-const createCardKey = (teamAIndex: number, teamBIndex: number) => {
-  const first = Math.min(teamAIndex, teamBIndex)
-  const second = Math.max(teamAIndex, teamBIndex)
-
-  return String(first) + '-' + String(second)
-}
-
-const normalizeTeamNames = (teamNames: string[]): Team[] =>
-  teamNames.map((teamName, index) => {
-    const trimmedName = teamName.trim()
-    const teamNumber = index + 1
-
-    return {
-      id: 'team-' + String(teamNumber),
-      name: trimmedName.length > 0 ? trimmedName : 'チーム ' + String(teamNumber),
-      order: teamNumber,
-    }
-  })
-
-const rotateParticipants = (participants: number[]) => {
-  if (participants.length <= 2) {
-    return participants
-  }
-
-  const fixedParticipant = participants[0]
-  const rotatingParticipants = participants.slice(1)
-  const movedParticipant = rotatingParticipants.pop()
-
-  if (fixedParticipant === undefined || movedParticipant === undefined) {
-    return participants
-  }
-
-  return [fixedParticipant, movedParticipant, ...rotatingParticipants]
-}
-
-const createRoundRobinPairs = (teamCount: number): RoundRobinPair[] => {
-  const participants = Array.from({ length: teamCount }, (_, index) => index)
-
-  if (teamCount % 2 === 1) {
-    participants.push(BYE_TEAM_INDEX)
-  }
-
-  const participantCount = participants.length
-  let rotation = [...participants]
-  const pairs: RoundRobinPair[] = []
-
-  for (let roundIndex = 0; roundIndex < participantCount - 1; roundIndex += 1) {
-    for (let pairIndex = 0; pairIndex < participantCount / 2; pairIndex += 1) {
-      const teamAIndex = rotation[pairIndex]
-      const teamBIndex = rotation[participantCount - 1 - pairIndex]
-
-      if (
-        teamAIndex === undefined ||
-        teamBIndex === undefined ||
-        teamAIndex === BYE_TEAM_INDEX ||
-        teamBIndex === BYE_TEAM_INDEX
-      ) {
-        continue
-      }
-
-      pairs.push([teamAIndex, teamBIndex])
-    }
-
-    rotation = rotateParticipants(rotation)
-  }
-
-  return pairs
 }
 
 const createPendingMatches = (teamCount: number, roundCount: number): PendingMatch[] => {

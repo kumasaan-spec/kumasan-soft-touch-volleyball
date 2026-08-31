@@ -1,5 +1,6 @@
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import './App.css'
+import { generateOneCourtSchedule } from './scheduler/generateOneCourtSchedule'
 import { generateTwoCourtSchedule } from './scheduler/generateTwoCourtSchedule'
 import type { CourtId, CourtNumber, ScheduleGenerationResult, ScheduleSlot } from './scheduler/types'
 
@@ -144,7 +145,66 @@ function CourtMatchDisplay({ slot, court }: CourtMatchDisplayProps) {
   )
 }
 
-function ScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function OneCourtMatchDisplay({ slot }: { slot: ScheduleSlot }) {
+  const match = slot.courts[0]?.match
+
+  if (match === undefined || match === null) {
+    return <span className="court-empty">空き</span>
+  }
+
+  return (
+    <span className="match-card">
+      <span>{match.teamA.name}</span>
+      <span className="versus">vs</span>
+      <span>{match.teamB.name}</span>
+    </span>
+  )
+}
+
+function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+  return (
+    <section className="result-panel" aria-labelledby="schedule-title">
+      <div className="result-heading">
+        <div>
+          <p className="result-kicker">1コート版</p>
+          <h2 id="schedule-title">生成結果</h2>
+          <p>
+            第1～第{result.slots.length}試合 / 全{result.totalMatches}対戦 /{' '}
+            {result.teams.length}チーム / {result.roundCount}周
+          </p>
+        </div>
+        <button className="secondary-button" type="button" onClick={onBack}>
+          入力画面へ戻る
+        </button>
+      </div>
+
+      <div className="schedule-table-wrap">
+        <table className="schedule-table">
+          <thead>
+            <tr>
+              <th scope="col">試合順</th>
+              <th scope="col">対戦</th>
+              <th scope="col">休憩チーム</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.slots.map((slot) => (
+              <tr key={slot.slotNumber}>
+                <th scope="row">第{slot.slotNumber}試合</th>
+                <td data-label="対戦">
+                  <OneCourtMatchDisplay slot={slot} />
+                </td>
+                <td data-label="休憩チーム">{formatRestingTeams(slot)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
+function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
   return (
     <section className="result-panel" aria-labelledby="schedule-title">
       <div className="result-heading">
@@ -189,6 +249,14 @@ function ScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
       </div>
     </section>
   )
+}
+
+function ScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+  if (result.courtCount === 1) {
+    return <OneCourtScheduleResultView result={result} onBack={onBack} />
+  }
+
+  return <TwoCourtScheduleResultView result={result} onBack={onBack} />
 }
 
 function App() {
@@ -260,18 +328,24 @@ function App() {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (setup.courtCount !== 2) {
+    if (setup.courtCount !== 1 && setup.courtCount !== 2) {
       setScheduleResult(null)
-      setFormMessage('現在2コート版を実装中です。コート数を2コートにすると組み合わせを作成できます。')
+      setFormMessage('現在1コート・2コート版を実装中です。3コート・4コートは今後対応予定です。')
       return
     }
 
     try {
-      const nextSchedule = generateTwoCourtSchedule({
-        courtCount: setup.courtCount,
-        roundCount: setup.roundCount,
-        teamNames: setup.teamNames,
-      })
+      const nextSchedule = setup.courtCount === 1
+        ? generateOneCourtSchedule({
+            courtCount: setup.courtCount,
+            roundCount: setup.roundCount,
+            teamNames: setup.teamNames,
+          })
+        : generateTwoCourtSchedule({
+            courtCount: setup.courtCount,
+            roundCount: setup.roundCount,
+            teamNames: setup.teamNames,
+          })
 
       setFormMessage(null)
       setScheduleResult(nextSchedule)
