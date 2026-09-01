@@ -10,6 +10,8 @@ import type {
 } from './types'
 
 const CANDIDATE_WINDOW_SIZE = 96
+const OPTIMIZED_SEARCH_MATCH_LIMIT = 45
+const OPTIMIZED_SEARCH_VISIT_LIMIT = 120_000
 const TWO_COURTS = ['A', 'B'] as const
 
 type TwoCourtId = (typeof TWO_COURTS)[number]
@@ -80,7 +82,9 @@ const createTeamStates = (teamCount: number): TeamScheduleState[] =>
     },
   }))
 
-const hasTeamOverlap = (firstMatch: PendingMatch, secondMatch: PendingMatch) =>
+type MatchTeamIndexes = Pick<PendingMatch, 'teamAIndex' | 'teamBIndex'>
+
+const hasTeamOverlap = (firstMatch: MatchTeamIndexes, secondMatch: MatchTeamIndexes) =>
   firstMatch.teamAIndex === secondMatch.teamAIndex ||
   firstMatch.teamAIndex === secondMatch.teamBIndex ||
   firstMatch.teamBIndex === secondMatch.teamAIndex ||
@@ -100,6 +104,621 @@ const collectPlayingTeamIndexes = (matches: PendingMatch[]) => {
 const getMatchTeamIndexes = (match: PendingMatch) => [match.teamAIndex, match.teamBIndex]
 
 const calculateSpread = (values: number[]) => Math.max(...values) - Math.min(...values)
+
+type SearchCard = {
+  cardKey: string
+  teamAIndex: number
+  teamBIndex: number
+  sequence: number
+}
+
+type SearchCandidate = {
+  selectedIndexes: number[]
+  nextPlayStreaks: number[]
+  nextRestStreaks: number[]
+  nextPlayedCounts: number[]
+  nextRestCounts: number[]
+  score: number
+}
+
+type MatchCourtPlan = {
+  matchIndex: number
+  court: TwoCourtId
+}
+
+type CourtAssignmentSearchState = {
+  lastCourts: number[]
+  teamMoves: number[]
+  moveCount: number
+  orderScore: number
+  courtPlans: MatchCourtPlan[][]
+}
+
+const scoreCardRepeatGap = (gap: number) => {
+  if (gap <= 1) {
+    return 24_000
+  }
+
+  if (gap === 2) {
+    return 6_000
+  }
+
+  if (gap === 3) {
+    return 1_200
+  }
+
+  if (gap <= 6) {
+    return (7 - gap) * 160
+  }
+
+  return 0
+}
+
+const scoreCardIntervalsForMatches = (
+  selectedMatches: PendingMatch[],
+  lastCardSlots: Map<string, number>,
+  slotNumber: number,
+) => selectedMatches.reduce((score, match) => {
+  const lastCardSlot = lastCardSlots.get(match.cardKey)
+
+  if (lastCardSlot === undefined) {
+    return score
+  }
+
+  return score + scoreCardRepeatGap(slotNumber - lastCardSlot)
+}, 0)
+
+const createSearchCards = (pendingMatches: PendingMatch[]) => {
+  const cards: SearchCard[] = []
+  const counts: number[] = []
+  const cardIndexByKey = new Map<string, number>()
+
+  for (const match of pendingMatches) {
+    const existingIndex = cardIndexByKey.get(match.cardKey)
+
+    if (existingIndex !== undefined) {
+      counts[existingIndex] += 1
+      continue
+    }
+
+    cardIndexByKey.set(match.cardKey, cards.length)
+    cards.push({
+      cardKey: match.cardKey,
+      teamAIndex: match.teamAIndex,
+      teamBIndex: match.teamBIndex,
+      sequence: match.sequence,
+    })
+    counts.push(1)
+  }
+
+  return { cards, counts }
+}
+
+const countTeamMatches = (
+  cards: SearchCard[],
+  counts: number[],
+  teamCount: number,
+) => {
+  const teamMatchCounts = Array.from({ length: teamCount }, () => 0)
+
+  cards.forEach((card, cardIndex) => {
+    teamMatchCounts[card.teamAIndex] += counts[cardIndex]
+    teamMatchCounts[card.teamBIndex] += counts[cardIndex]
+  })
+
+  return teamMatchCounts
+}
+
+const calculateMinimumMaxStreak = (activeCount: number, breakCount: number) => {
+  if (breakCount <= 0) {
+    return activeCount
+  }
+
+  return Math.max(1, Math.ceil(activeCount / (breakCount + 1)))
+}
+
+const isCardTooClose = (
+  cardIndex: number,
+  lastCardSlots: readonly number[],
+  slotNumber: number,
+  minimumCardGap: number,
+) => {
+  const lastCardSlot = lastCardSlots[cardIndex]
+  return lastCardSlot > 0 && slotNumber - lastCardSlot < minimumCardGap
+}
+
+const collectSearchPlayingTeams = (
+  cards: SearchCard[],
+  selectedIndexes: readonly number[],
+) => {
+  const playingTeamIndexes = new Set<number>()
+
+  selectedIndexes.forEach((selectedIndex) => {
+    const card = cards[selectedIndex]
+    playingTeamIndexes.add(card.teamAIndex)
+    playingTeamIndexes.add(card.teamBIndex)
+  })
+
+  return playingTeamIndexes
+}
+
+const createSearchCandidate = (
+  cards: SearchCard[],
+  counts: readonly number[],
+  selectedIndexes: number[],
+  playStreaks: readonly number[],
+  restStreaks: readonly number[],
+  playedCounts: readonly number[],
+  restCounts: readonly number[],
+  lastCardSlots: readonly number[],
+  slotNumber: number,
+  targetMaxPlayStreak: number,
+  targetMaxRestStreak: number,
+) => {
+  const playingTeamIndexes = collectSearchPlayingTeams(cards, selectedIndexes)
+  const nextPlayStreaks = playStreaks.map((streak, teamIndex) =>
+    playingTeamIndexes.has(teamIndex) ? streak + 1 : 0,
+  )
+  const nextRestStreaks = restStreaks.map((streak, teamIndex) =>
+    playingTeamIndexes.has(teamIndex) ? 0 : streak + 1,
+  )
+
+  if (
+    nextPlayStreaks.some((streak) => streak > targetMaxPlayStreak) ||
+    nextRestStreaks.some((streak) => streak > targetMaxRestStreak)
+  ) {
+    return null
+  }
+
+  const nextPlayedCounts = playedCounts.map((count, teamIndex) =>
+    playingTeamIndexes.has(teamIndex) ? count + 1 : count,
+  )
+  const nextRestCounts = restCounts.map((count, teamIndex) =>
+    playingTeamIndexes.has(teamIndex) ? count : count + 1,
+  )
+  const repeatScore = selectedIndexes.reduce((score, selectedIndex) => {
+    const lastCardSlot = lastCardSlots[selectedIndex]
+
+    if (lastCardSlot <= 0) {
+      return score
+    }
+
+    return score + scoreCardRepeatGap(slotNumber - lastCardSlot)
+  }, 0)
+  const remainingCountScore = selectedIndexes.reduce(
+    (score, selectedIndex) => score - counts[selectedIndex] * 60,
+    0,
+  )
+  const sequenceScore = selectedIndexes.reduce(
+    (score, selectedIndex) => score + cards[selectedIndex].sequence * 0.001,
+    0,
+  )
+  const score =
+    repeatScore +
+    calculateSpread(nextRestCounts) * 520 +
+    calculateSpread(nextPlayedCounts) * 120 +
+    Math.max(...nextPlayStreaks) * 90 +
+    remainingCountScore +
+    sequenceScore
+
+  return {
+    selectedIndexes,
+    nextPlayStreaks,
+    nextRestStreaks,
+    nextPlayedCounts,
+    nextRestCounts,
+    score,
+  }
+}
+
+const createSearchPairCandidates = (
+  cards: SearchCard[],
+  counts: readonly number[],
+  playStreaks: readonly number[],
+  restStreaks: readonly number[],
+  playedCounts: readonly number[],
+  restCounts: readonly number[],
+  lastCardSlots: readonly number[],
+  slotNumber: number,
+  targetMaxPlayStreak: number,
+  targetMaxRestStreak: number,
+  minimumCardGap: number,
+) => {
+  const candidates: SearchCandidate[] = []
+  const remainingMatchCount = counts.reduce((total, count) => total + count, 0)
+
+  if (remainingMatchCount === 1) {
+    const selectedIndex = counts.findIndex((count) => count > 0)
+
+    if (
+      selectedIndex >= 0 &&
+      !isCardTooClose(selectedIndex, lastCardSlots, slotNumber, minimumCardGap)
+    ) {
+      const candidate = createSearchCandidate(
+        cards,
+        counts,
+        [selectedIndex],
+        playStreaks,
+        restStreaks,
+        playedCounts,
+        restCounts,
+        lastCardSlots,
+        slotNumber,
+        targetMaxPlayStreak,
+        targetMaxRestStreak,
+      )
+
+      if (candidate !== null) {
+        candidates.push(candidate)
+      }
+    }
+
+    return candidates
+  }
+
+  for (let firstIndex = 0; firstIndex < cards.length - 1; firstIndex += 1) {
+    if (counts[firstIndex] <= 0 || isCardTooClose(firstIndex, lastCardSlots, slotNumber, minimumCardGap)) {
+      continue
+    }
+
+    for (let secondIndex = firstIndex + 1; secondIndex < cards.length; secondIndex += 1) {
+      if (
+        counts[secondIndex] <= 0 ||
+        isCardTooClose(secondIndex, lastCardSlots, slotNumber, minimumCardGap) ||
+        hasTeamOverlap(cards[firstIndex], cards[secondIndex])
+      ) {
+        continue
+      }
+
+      const candidate = createSearchCandidate(
+        cards,
+        counts,
+        [firstIndex, secondIndex],
+        playStreaks,
+        restStreaks,
+        playedCounts,
+        restCounts,
+        lastCardSlots,
+        slotNumber,
+        targetMaxPlayStreak,
+        targetMaxRestStreak,
+      )
+
+      if (candidate !== null) {
+        candidates.push(candidate)
+      }
+    }
+  }
+
+  return candidates.sort((first, second) => first.score - second.score)
+}
+
+const createSearchMemoKey = (
+  counts: readonly number[],
+  playStreaks: readonly number[],
+  restStreaks: readonly number[],
+  lastCardSlots: readonly number[],
+) => [
+  counts.join(','),
+  playStreaks.join(','),
+  restStreaks.join(','),
+  lastCardSlots.join(','),
+].join('|')
+
+const searchOptimizedCardSlots = (
+  cards: SearchCard[],
+  counts: number[],
+  playStreaks: number[],
+  restStreaks: number[],
+  playedCounts: number[],
+  restCounts: number[],
+  lastCardSlots: number[],
+  slotNumber: number,
+  targetMaxPlayStreak: number,
+  targetMaxRestStreak: number,
+  minimumCardGap: number,
+  memo: Set<string>,
+  visitCount: { value: number },
+): string[][] | null => {
+  visitCount.value += 1
+
+  if (visitCount.value > OPTIMIZED_SEARCH_VISIT_LIMIT) {
+    return null
+  }
+
+  if (counts.every((count) => count === 0)) {
+    return []
+  }
+
+  const memoKey = createSearchMemoKey(counts, playStreaks, restStreaks, lastCardSlots)
+  if (memo.has(memoKey)) {
+    return null
+  }
+
+  const candidates = createSearchPairCandidates(
+    cards,
+    counts,
+    playStreaks,
+    restStreaks,
+    playedCounts,
+    restCounts,
+    lastCardSlots,
+    slotNumber,
+    targetMaxPlayStreak,
+    targetMaxRestStreak,
+    minimumCardGap,
+  )
+
+  for (const candidate of candidates) {
+    const nextCounts = [...counts]
+    const nextLastCardSlots = [...lastCardSlots]
+
+    candidate.selectedIndexes.forEach((selectedIndex) => {
+      nextCounts[selectedIndex] -= 1
+      nextLastCardSlots[selectedIndex] = slotNumber
+    })
+
+    const remainingCardSlots = searchOptimizedCardSlots(
+      cards,
+      nextCounts,
+      candidate.nextPlayStreaks,
+      candidate.nextRestStreaks,
+      candidate.nextPlayedCounts,
+      candidate.nextRestCounts,
+      nextLastCardSlots,
+      slotNumber + 1,
+      targetMaxPlayStreak,
+      targetMaxRestStreak,
+      minimumCardGap,
+      memo,
+      visitCount,
+    )
+
+    if (remainingCardSlots !== null) {
+      return [
+        candidate.selectedIndexes.map((selectedIndex) => cards[selectedIndex].cardKey),
+        ...remainingCardSlots,
+      ]
+    }
+  }
+
+  memo.add(memoKey)
+  return null
+}
+
+const createOptimizedCardSlots = (
+  pendingMatches: PendingMatch[],
+  teamCount: number,
+) => {
+  if (pendingMatches.length > OPTIMIZED_SEARCH_MATCH_LIMIT) {
+    return null
+  }
+
+  const { cards, counts } = createSearchCards(pendingMatches)
+  const expectedSlotCount = Math.ceil(pendingMatches.length / TWO_COURTS.length)
+  const teamMatchCounts = countTeamMatches(cards, counts, teamCount)
+  const teamRestCounts = teamMatchCounts.map((matchCount) => expectedSlotCount - matchCount)
+  const minimumMaxPlayStreak = Math.max(
+    ...teamMatchCounts.map((matchCount, teamIndex) =>
+      calculateMinimumMaxStreak(matchCount, teamRestCounts[teamIndex]),
+    ),
+  )
+  const minimumMaxRestStreak = Math.max(
+    ...teamRestCounts.map((restCount, teamIndex) =>
+      calculateMinimumMaxStreak(restCount, teamMatchCounts[teamIndex]),
+    ),
+  )
+
+  for (let maxPlayStreak = minimumMaxPlayStreak; maxPlayStreak <= minimumMaxPlayStreak + 2; maxPlayStreak += 1) {
+    for (const minimumCardGap of [3, 2]) {
+      const result = searchOptimizedCardSlots(
+        cards,
+        [...counts],
+        Array.from({ length: teamCount }, () => 0),
+        Array.from({ length: teamCount }, () => 0),
+        Array.from({ length: teamCount }, () => 0),
+        Array.from({ length: teamCount }, () => 0),
+        Array.from({ length: cards.length }, () => 0),
+        1,
+        maxPlayStreak,
+        minimumMaxRestStreak,
+        minimumCardGap,
+        new Set(),
+        { value: 0 },
+      )
+
+      if (result !== null) {
+        return result
+      }
+    }
+  }
+
+  return null
+}
+
+const pickMatchesForCardSlots = (
+  cardSlots: string[][],
+  sourcePendingMatches: PendingMatch[],
+) => {
+  const remainingMatches = [...sourcePendingMatches]
+
+  return cardSlots.map((cardKeys) => cardKeys.map((cardKey) => {
+    const selectedIndex = remainingMatches.findIndex((match) => match.cardKey === cardKey)
+
+    if (selectedIndex < 0) {
+      throw new Error('組み合わせを作成できませんでした。')
+    }
+
+    const [selectedMatch] = remainingMatches.splice(selectedIndex, 1)
+    return selectedMatch
+  }))
+}
+
+const createCourtPlanOptions = (selectedMatches: readonly PendingMatch[]): MatchCourtPlan[][] => {
+  if (selectedMatches.length === 1) {
+    return [
+      [{ matchIndex: 0, court: 'A' }],
+      [{ matchIndex: 0, court: 'B' }],
+    ]
+  }
+
+  return [
+    [
+      { matchIndex: 0, court: 'A' },
+      { matchIndex: 1, court: 'B' },
+    ],
+    [
+      { matchIndex: 0, court: 'B' },
+      { matchIndex: 1, court: 'A' },
+    ],
+  ]
+}
+
+const getCourtCode = (court: TwoCourtId) => court === 'A' ? 1 : 2
+
+const scoreCourtPlanOrder = (courtPlans: readonly MatchCourtPlan[]) =>
+  courtPlans.reduce(
+    (score, courtPlan, planIndex) =>
+      score + getCourtCode(courtPlan.court) * (planIndex + 1) * 0.001,
+    0,
+  )
+
+const getMaxTeamMoveCount = (state: CourtAssignmentSearchState) => Math.max(...state.teamMoves)
+
+const getTeamMoveSpread = (state: CourtAssignmentSearchState) =>
+  calculateSpread(state.teamMoves)
+
+const isBetterCourtAssignmentState = (
+  candidate: CourtAssignmentSearchState,
+  current: CourtAssignmentSearchState,
+) =>
+  getMaxTeamMoveCount(candidate) < getMaxTeamMoveCount(current) ||
+  (
+    getMaxTeamMoveCount(candidate) === getMaxTeamMoveCount(current) &&
+    candidate.moveCount < current.moveCount
+  ) ||
+  (
+    getMaxTeamMoveCount(candidate) === getMaxTeamMoveCount(current) &&
+    candidate.moveCount === current.moveCount &&
+    getTeamMoveSpread(candidate) < getTeamMoveSpread(current)
+  ) ||
+  (
+    getMaxTeamMoveCount(candidate) === getMaxTeamMoveCount(current) &&
+    candidate.moveCount === current.moveCount &&
+    getTeamMoveSpread(candidate) === getTeamMoveSpread(current) &&
+    candidate.orderScore < current.orderScore
+  )
+
+const createOptimizedCourtPlanSlots = (
+  matchSlots: PendingMatch[][],
+  teamCount: number,
+) => {
+  let states = new Map<string, CourtAssignmentSearchState>()
+  const initialLastCourts = Array.from({ length: teamCount }, () => 0)
+
+  states.set(initialLastCourts.join(','), {
+    lastCourts: initialLastCourts,
+    teamMoves: Array.from({ length: teamCount }, () => 0),
+    moveCount: 0,
+    orderScore: 0,
+    courtPlans: [],
+  })
+
+  for (const selectedMatches of matchSlots) {
+    const nextStates = new Map<string, CourtAssignmentSearchState>()
+
+    for (const state of states.values()) {
+      for (const courtPlans of createCourtPlanOptions(selectedMatches)) {
+        const nextLastCourts = [...state.lastCourts]
+        const nextTeamMoves = [...state.teamMoves]
+        let moveCount = state.moveCount
+
+        for (const courtPlan of courtPlans) {
+          const match = selectedMatches[courtPlan.matchIndex]
+          const courtCode = getCourtCode(courtPlan.court)
+
+          for (const teamIndex of getMatchTeamIndexes(match)) {
+            const lastCourt = nextLastCourts[teamIndex]
+
+            if (lastCourt !== 0 && lastCourt !== courtCode) {
+              moveCount += 1
+              nextTeamMoves[teamIndex] += 1
+            }
+
+            nextLastCourts[teamIndex] = courtCode
+          }
+        }
+
+        const stateKey = nextLastCourts.join(',')
+        const nextState: CourtAssignmentSearchState = {
+          lastCourts: nextLastCourts,
+          teamMoves: nextTeamMoves,
+          moveCount,
+          orderScore: state.orderScore + scoreCourtPlanOrder(courtPlans),
+          courtPlans: [...state.courtPlans, courtPlans],
+        }
+        const currentState = nextStates.get(stateKey)
+
+        if (
+          currentState === undefined ||
+          isBetterCourtAssignmentState(nextState, currentState)
+        ) {
+          nextStates.set(stateKey, nextState)
+        }
+      }
+    }
+
+    states = nextStates
+  }
+
+  const [bestState] = [...states.values()].sort((first, second) =>
+    getMaxTeamMoveCount(first) - getMaxTeamMoveCount(second) ||
+    first.moveCount - second.moveCount ||
+    getTeamMoveSpread(first) - getTeamMoveSpread(second) ||
+    first.orderScore - second.orderScore,
+  )
+
+  return bestState?.courtPlans ?? []
+}
+
+const buildCourtAssignmentsFromMatches = (
+  selectedMatches: PendingMatch[],
+  courtPlans: MatchCourtPlan[],
+  teams: Team[],
+): CourtAssignment[] =>
+  TWO_COURTS.map((court) => {
+    const courtPlan = courtPlans.find((plan) => plan.court === court)
+
+    if (courtPlan === undefined) {
+      return createEmptyAssignment(court)
+    }
+
+    return {
+      court,
+      match: toScheduleMatch(selectedMatches[courtPlan.matchIndex], teams),
+    }
+  })
+
+const buildScheduleFromCardSlots = (
+  cardSlots: string[][],
+  sourcePendingMatches: PendingMatch[],
+  teams: Team[],
+) => {
+  const matchSlots = pickMatchesForCardSlots(cardSlots, sourcePendingMatches)
+  const courtPlanSlots = createOptimizedCourtPlanSlots(matchSlots, teams.length)
+
+  return matchSlots.map((selectedMatches, slotIndex): ScheduleSlot => {
+    const courtPlans = courtPlanSlots[slotIndex]
+    const playingTeamIndexes = collectPlayingTeamIndexes(selectedMatches)
+    const restingTeams = teams.filter((_, teamIndex) => !playingTeamIndexes.has(teamIndex))
+
+    return {
+      slotNumber: slotIndex + 1,
+      courts: buildCourtAssignmentsFromMatches(selectedMatches, courtPlans, teams),
+      restingTeams,
+    }
+  })
+}
 
 const scoreRestPlan = (
   selectedMatches: PendingMatch[],
@@ -170,25 +789,7 @@ const scoreCardIntervals = (
   selectedMatches: PendingMatch[],
   lastCardSlots: Map<string, number>,
   slotNumber: number,
-) => {
-  let score = 0
-
-  for (const match of selectedMatches) {
-    const lastCardSlot = lastCardSlots.get(match.cardKey)
-
-    if (lastCardSlot === undefined) {
-      continue
-    }
-
-    const gap = slotNumber - lastCardSlot
-
-    if (gap <= 6) {
-      score += (7 - gap) * 90
-    }
-  }
-
-  return score
-}
+) => scoreCardIntervalsForMatches(selectedMatches, lastCardSlots, slotNumber)
 
 const scoreSequence = (selectedMatches: PendingMatch[]) =>
   selectedMatches.reduce(
@@ -495,6 +1096,23 @@ export const generateTwoCourtSchedule = ({
 
   const teams = normalizeTeamNames(teamNames)
   const pendingMatches = createPendingMatches(teams.length, roundCount)
+  const optimizedCardSlots = createOptimizedCardSlots(pendingMatches, teams.length)
+
+  if (optimizedCardSlots !== null) {
+    const slots = buildScheduleFromCardSlots(optimizedCardSlots, pendingMatches, teams)
+
+    return {
+      courtCount,
+      roundCount,
+      teams,
+      slots,
+      totalMatches: slots.reduce(
+        (total, slot) => total + slot.courts.filter((court) => court.match !== null).length,
+        0,
+      ),
+    }
+  }
+
   const teamStates = createTeamStates(teams.length)
   const lastCardSlots = new Map<string, number>()
   const slots: ScheduleSlot[] = []
