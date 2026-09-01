@@ -61,6 +61,13 @@ h2 {
   line-height: 1.3;
 }
 
+h3 {
+  margin: 0 0 6px;
+  color: #15231f;
+  font-size: 18px;
+  line-height: 1.3;
+}
+
 .lead,
 .section-heading p {
   color: #5c6f69;
@@ -218,6 +225,34 @@ h2 {
   gap: 18px;
 }
 
+.venue-settings {
+  display: grid;
+  gap: 14px;
+}
+
+.venue-settings-heading p {
+  margin-bottom: 0;
+  color: #5c6f69;
+  font-size: 14px;
+}
+
+.venue-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px 16px;
+}
+
+.venue-field {
+  display: grid;
+  gap: 8px;
+}
+
+.venue-field span {
+  color: #31423e;
+  font-size: 15px;
+  font-weight: 700;
+}
+
 .field-group,
 .team-field {
   display: grid;
@@ -369,7 +404,8 @@ button:focus-visible {
     white-space: normal;
   }
 
-  .settings-grid {
+  .settings-grid,
+  .venue-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -473,6 +509,11 @@ button:focus-visible {
     color: #5c6f69;
     font-size: 13px;
     font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+
+  .three-court-schedule-table td {
+    grid-template-columns: minmax(118px, 42%) minmax(0, 1fr);
   }
 
   .schedule-table td:last-child {

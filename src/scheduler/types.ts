@@ -2,6 +2,11 @@ export type CourtNumber = 1 | 2 | 3 | 4
 
 export type CourtId = 'A' | 'B' | 'C' | 'D'
 
+export type CourtVenueSetting = {
+  court: CourtId
+  venueName: string
+}
+
 export type Team = {
   id: string
   name: string
@@ -30,6 +35,7 @@ export type ScheduleGenerationInput = {
   courtCount: CourtNumber
   roundCount: number
   teamNames: string[]
+  courtVenues?: CourtVenueSetting[]
 }
 
 export type ScheduleGenerationResult = {
@@ -38,4 +44,5 @@ export type ScheduleGenerationResult = {
   teams: Team[]
   slots: ScheduleSlot[]
   totalMatches: number
+  courtVenues?: CourtVenueSetting[]
 }

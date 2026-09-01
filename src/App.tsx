@@ -1,10 +1,25 @@
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import './App.css'
 import { generateOneCourtSchedule } from './scheduler/generateOneCourtSchedule'
+import { generateThreeCourtSchedule } from './scheduler/generateThreeCourtSchedule'
 import { generateTwoCourtSchedule } from './scheduler/generateTwoCourtSchedule'
-import type { CourtId, CourtNumber, ScheduleGenerationResult, ScheduleSlot } from './scheduler/types'
+import type {
+  CourtId,
+  CourtNumber,
+  CourtVenueSetting,
+  ScheduleGenerationResult,
+  ScheduleSlot,
+} from './scheduler/types'
 
 const COURT_OPTIONS = [1, 2, 3, 4] as const
+const THREE_COURTS = ['A', 'B', 'C'] as const
+const VENUE_OPTIONS = ['会場1', '会場2'] as const
+const DEFAULT_COURT_VENUES: Record<CourtId, string> = {
+  A: '会場1',
+  B: '会場1',
+  C: '会場1',
+  D: '会場1',
+}
 const ROUND_PRESETS = [1, 2, 3, 4, 5] as const
 const MAX_TEAM_COUNT = 32
 const MIN_ROUND_COUNT = 1
@@ -29,6 +44,7 @@ type MatchSetup = {
   teamCount: number
   roundCount: number
   teamNames: string[]
+  courtVenues: Record<CourtId, string>
 }
 
 type NumberSelectorProps = {
@@ -78,6 +94,24 @@ const formatRestingTeams = (slot: ScheduleSlot) => {
 
 const getCourtAssignment = (slot: ScheduleSlot, court: CourtId) =>
   slot.courts.find((assignment) => assignment.court === court)
+
+const createCourtVenueSettings = (
+  courtVenues: Record<CourtId, string>,
+): CourtVenueSetting[] =>
+  THREE_COURTS.map((court) => ({
+    court,
+    venueName: courtVenues[court],
+  }))
+
+const formatCourtLabel = (result: ScheduleGenerationResult, court: CourtId) => {
+  const venueName = result.courtVenues?.find((setting) => setting.court === court)?.venueName
+
+  if (result.courtCount === 3 && venueName !== undefined) {
+    return court + 'コート（' + venueName + '）'
+  }
+
+  return court + 'コート'
+}
 
 function NumberSelector({
   id,
@@ -251,9 +285,64 @@ function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
   )
 }
 
+function ThreeCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+  return (
+    <section className="result-panel" aria-labelledby="schedule-title">
+      <div className="result-heading">
+        <div>
+          <p className="result-kicker">3コート版</p>
+          <h2 id="schedule-title">生成結果</h2>
+          <p>
+            第1～第{result.slots.length}試合 / 全{result.totalMatches}対戦 /{' '}
+            {result.teams.length}チーム / {result.roundCount}周
+          </p>
+        </div>
+        <button className="secondary-button" type="button" onClick={onBack}>
+          入力画面へ戻る
+        </button>
+      </div>
+
+      <div className="schedule-table-wrap">
+        <table className="schedule-table three-court-schedule-table">
+          <thead>
+            <tr>
+              <th scope="col">試合順</th>
+              <th scope="col">{formatCourtLabel(result, 'A')}</th>
+              <th scope="col">{formatCourtLabel(result, 'B')}</th>
+              <th scope="col">{formatCourtLabel(result, 'C')}</th>
+              <th scope="col">休憩チーム</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.slots.map((slot) => (
+              <tr key={slot.slotNumber}>
+                <th scope="row">第{slot.slotNumber}試合</th>
+                <td data-label={formatCourtLabel(result, 'A')}>
+                  <CourtMatchDisplay slot={slot} court="A" />
+                </td>
+                <td data-label={formatCourtLabel(result, 'B')}>
+                  <CourtMatchDisplay slot={slot} court="B" />
+                </td>
+                <td data-label={formatCourtLabel(result, 'C')}>
+                  <CourtMatchDisplay slot={slot} court="C" />
+                </td>
+                <td data-label="休憩チーム">{formatRestingTeams(slot)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  )
+}
+
 function ScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
   if (result.courtCount === 1) {
     return <OneCourtScheduleResultView result={result} onBack={onBack} />
+  }
+
+  if (result.courtCount === 3) {
+    return <ThreeCourtScheduleResultView result={result} onBack={onBack} />
   }
 
   return <TwoCourtScheduleResultView result={result} onBack={onBack} />
@@ -265,6 +354,7 @@ function App() {
     teamCount: 6,
     roundCount: 3,
     teamNames: createEmptyTeamNames(6),
+    courtVenues: DEFAULT_COURT_VENUES,
   }))
   const [scheduleResult, setScheduleResult] = useState<ScheduleGenerationResult | null>(null)
   const [formMessage, setFormMessage] = useState<string | null>(null)
@@ -309,6 +399,16 @@ function App() {
     }))
   }
 
+  const updateCourtVenue = (court: CourtId, venueName: string) => {
+    setSetup((current) => ({
+      ...current,
+      courtVenues: {
+        ...current.courtVenues,
+        [court]: venueName,
+      },
+    }))
+  }
+
   const handleCourtChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const nextCourtCount = Number(event.target.value) as CourtNumber
 
@@ -328,24 +428,35 @@ function App() {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (setup.courtCount !== 1 && setup.courtCount !== 2) {
+    if (setup.courtCount !== 1 && setup.courtCount !== 2 && setup.courtCount !== 3) {
       setScheduleResult(null)
-      setFormMessage('現在1コート・2コート版を実装中です。3コート・4コートは今後対応予定です。')
+      setFormMessage('現在1コート・2コート・3コート版を実装中です。4コートは今後対応予定です。')
       return
     }
 
     try {
-      const nextSchedule = setup.courtCount === 1
-        ? generateOneCourtSchedule({
-            courtCount: setup.courtCount,
-            roundCount: setup.roundCount,
-            teamNames: setup.teamNames,
-          })
-        : generateTwoCourtSchedule({
-            courtCount: setup.courtCount,
-            roundCount: setup.roundCount,
-            teamNames: setup.teamNames,
-          })
+      let nextSchedule: ScheduleGenerationResult
+
+      if (setup.courtCount === 1) {
+        nextSchedule = generateOneCourtSchedule({
+          courtCount: setup.courtCount,
+          roundCount: setup.roundCount,
+          teamNames: setup.teamNames,
+        })
+      } else if (setup.courtCount === 2) {
+        nextSchedule = generateTwoCourtSchedule({
+          courtCount: setup.courtCount,
+          roundCount: setup.roundCount,
+          teamNames: setup.teamNames,
+        })
+      } else {
+        nextSchedule = generateThreeCourtSchedule({
+          courtCount: setup.courtCount,
+          roundCount: setup.roundCount,
+          teamNames: setup.teamNames,
+          courtVenues: createCourtVenueSettings(setup.courtVenues),
+        })
+      }
 
       setFormMessage(null)
       setScheduleResult(nextSchedule)
@@ -434,6 +545,37 @@ function App() {
                   onChange={updateRoundCount}
                 />
               </div>
+
+              {setup.courtCount === 3 && (
+                <div className="venue-settings" aria-labelledby="venue-settings-title">
+                  <div className="venue-settings-heading">
+                    <h3 id="venue-settings-title">会場設定</h3>
+                    <p>3面が同じ会場なら、このまま使えます。</p>
+                  </div>
+                  <div className="venue-grid">
+                    {THREE_COURTS.map((court) => {
+                      const selectId = 'venue-' + court
+
+                      return (
+                        <label className="venue-field" htmlFor={selectId} key={court}>
+                          <span>{court}コート</span>
+                          <select
+                            id={selectId}
+                            value={setup.courtVenues[court]}
+                            onChange={(changeEvent) => updateCourtVenue(court, changeEvent.target.value)}
+                          >
+                            {VENUE_OPTIONS.map((venueName) => (
+                              <option key={venueName} value={venueName}>
+                                {venueName}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </section>
 
             <section className="form-section" aria-labelledby="team-names-title">
