@@ -3,6 +3,7 @@ import './App.css'
 import { generateOneCourtSchedule } from './scheduler/generateOneCourtSchedule'
 import { generateThreeCourtSchedule } from './scheduler/generateThreeCourtSchedule'
 import { generateTwoCourtSchedule } from './scheduler/generateTwoCourtSchedule'
+import { isAlwaysActiveTeamCount } from './scheduler/teamUtils'
 import type {
   CourtId,
   CourtNumber,
@@ -12,6 +13,7 @@ import type {
 } from './scheduler/types'
 
 const COURT_OPTIONS = [1, 2, 3, 4] as const
+const ACTIVE_COURTS = ['A', 'B', 'C', 'D'] as const
 const THREE_COURTS = ['A', 'B', 'C'] as const
 const VENUE_OPTIONS = ['会場1', '会場2'] as const
 const DEFAULT_COURT_VENUES: Record<CourtId, string> = {
@@ -83,6 +85,14 @@ const resizeTeamNames = (names: string[], count: number) =>
   Array.from({ length: count }, (_, index) => names[index] ?? '')
 
 const getMinTeamCount = (courtCount: CourtNumber) => MIN_TEAM_COUNT_BY_COURT[courtCount]
+
+const hasMultipleCourtVenues = (
+  courtCount: CourtNumber,
+  courtVenues: Record<CourtId, string>,
+) =>
+  new Set(
+    ACTIVE_COURTS.slice(0, courtCount).map((court) => courtVenues[court]),
+  ).size > 1
 
 const formatRestingTeams = (slot: ScheduleSlot) => {
   if (slot.restingTeams.length === 0) {
@@ -366,6 +376,9 @@ function App() {
 
   const minTeamCount = getMinTeamCount(setup.courtCount)
   const teamPresets = TEAM_PRESETS_BY_COURT[setup.courtCount]
+  const shouldShowVenueMoveNote =
+    isAlwaysActiveTeamCount(setup.courtCount, setup.teamCount) &&
+    hasMultipleCourtVenues(setup.courtCount, setup.courtVenues)
 
   const updateTeamCount = (teamCount: number) => {
     setSetup((current) => {
@@ -552,6 +565,11 @@ function App() {
                     <h3 id="venue-settings-title">会場設定</h3>
                     <p>3面が同じ会場なら、このまま使えます。</p>
                   </div>
+                  {shouldShowVenueMoveNote && (
+                    <p className="venue-note">
+                      全チームが毎試合出場するため、複数会場を使用すると会場移動が多くなる場合があります。
+                    </p>
+                  )}
                   <div className="venue-grid">
                     {THREE_COURTS.map((court) => {
                       const selectId = 'venue-' + court

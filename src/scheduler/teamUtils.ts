@@ -1,4 +1,4 @@
-import type { Team } from './types'
+import type { CourtNumber, Team } from './types'
 
 export const normalizeTeamNames = (teamNames: string[]): Team[] =>
   teamNames.map((teamName, index) => {
@@ -11,3 +11,6 @@ export const normalizeTeamNames = (teamNames: string[]): Team[] =>
       order: teamNumber,
     }
   })
+
+export const isAlwaysActiveTeamCount = (courtCount: CourtNumber, teamCount: number) =>
+  teamCount === courtCount * 2

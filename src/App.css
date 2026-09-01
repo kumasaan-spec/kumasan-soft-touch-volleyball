@@ -236,6 +236,17 @@ h3 {
   font-size: 14px;
 }
 
+.venue-note {
+  margin: 0;
+  padding: 10px 12px;
+  color: #62613d;
+  background: #fbf8ea;
+  border: 1px solid #e8dfaf;
+  border-radius: 7px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .venue-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

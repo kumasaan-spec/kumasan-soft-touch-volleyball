@@ -19,30 +19,36 @@ const rotateParticipants = (participants: number[]) => {
   )
 }
 
-export const createRoundRobinPairs = (teamCount: number): RoundRobinPair[] => {
+export const createRoundRobinRounds = (teamCount: number): RoundRobinPair[][] => {
   const participants = Array.from({ length: teamCount }, (_, index) => index)
 
   if (participants.length % 2 === 1) {
     participants.push(BYE_TEAM_INDEX)
   }
 
-  const pairs: RoundRobinPair[] = []
+  const rounds: RoundRobinPair[][] = []
   let rotatingParticipants = participants
   const roundCount = rotatingParticipants.length - 1
   const matchesPerRound = rotatingParticipants.length / 2
 
   for (let roundIndex = 0; roundIndex < roundCount; roundIndex += 1) {
+    const roundPairs: RoundRobinPair[] = []
+
     for (let pairIndex = 0; pairIndex < matchesPerRound; pairIndex += 1) {
       const first = rotatingParticipants[pairIndex]
       const second = rotatingParticipants[rotatingParticipants.length - 1 - pairIndex]
 
       if (first !== BYE_TEAM_INDEX && second !== BYE_TEAM_INDEX) {
-        pairs.push([first, second])
+        roundPairs.push([first, second])
       }
     }
 
+    rounds.push(roundPairs)
     rotatingParticipants = rotateParticipants(rotatingParticipants)
   }
 
-  return pairs
+  return rounds
 }
+
+export const createRoundRobinPairs = (teamCount: number): RoundRobinPair[] =>
+  createRoundRobinRounds(teamCount).flat()

@@ -1,5 +1,5 @@
-import { createCardKey, createRoundRobinPairs } from './roundRobin'
-import { normalizeTeamNames } from './teamUtils'
+import { createCardKey, createRoundRobinPairs, createRoundRobinRounds } from './roundRobin'
+import { isAlwaysActiveTeamCount, normalizeTeamNames } from './teamUtils'
 import type {
   CourtAssignment,
   CourtVenueSetting,
@@ -15,6 +15,7 @@ const FALLBACK_WINDOW_SIZE = 180
 const COMPLETION_SEARCH_LIMIT = 24
 const TERMINAL_CARD_SCORE_WEIGHT = 1
 const TERMINAL_CARD_SEARCH_LIMIT = 12
+const ALWAYS_ACTIVE_COURT_STATE_LIMIT = 4096
 const THREE_COURTS = ['A', 'B', 'C'] as const
 const DEFAULT_VENUE_NAME = '会場1'
 
@@ -46,10 +47,28 @@ type CourtPlan = {
   court: ThreeCourtId
 }
 
+type CourtTeamIndexes = readonly [number, number]
+
 type SlotPlan = {
   selectedIndexes: number[]
   courtPlans: CourtPlan[]
   score: number
+}
+
+type AlwaysActiveCourtState = {
+  lastCourts: number[]
+  lastVenues: number[]
+  previousVenues: number[]
+  teamCourtMoves: number[]
+  teamVenueMoves: number[]
+  teamVenueRoundTrips: number[]
+  teamVenueUseCounts: number[][]
+  lastCourtTeamIndexes: Array<CourtTeamIndexes | null>
+  oneTeamChangeCount: number
+  twoTeamChangeCount: number
+  sameCourtCardRepeatCount: number
+  orderScore: number
+  courtPlanSlots: CourtPlan[][]
 }
 
 const createPendingMatches = (teamCount: number, roundCount: number): PendingMatch[] => {
@@ -133,6 +152,38 @@ const hasAnyTeamOverlap = (matches: PendingMatch[]) =>
         otherMatchIndex > matchIndex && hasTeamOverlap(match, otherMatch),
     ),
   )
+
+const getCourtTeamIndexes = (match: PendingMatch): CourtTeamIndexes => [
+  match.teamAIndex,
+  match.teamBIndex,
+]
+
+const countSharedCourtTeams = (
+  previousTeams: CourtTeamIndexes,
+  nextTeams: CourtTeamIndexes,
+) =>
+  nextTeams.filter((teamIndex) => previousTeams.includes(teamIndex)).length
+
+const scoreCourtTurnover = (
+  previousTeams: CourtTeamIndexes | null | undefined,
+  nextTeams: CourtTeamIndexes,
+) => {
+  if (previousTeams === null || previousTeams === undefined) {
+    return 0
+  }
+
+  const sharedTeamCount = countSharedCourtTeams(previousTeams, nextTeams)
+
+  if (sharedTeamCount === 2) {
+    return 6_000
+  }
+
+  if (sharedTeamCount === 1) {
+    return -8
+  }
+
+  return 26
+}
 
 const scoreCardRepeatGap = (gap: number, preferWideSpacing = false) => {
   if (preferWideSpacing) {
@@ -593,10 +644,13 @@ const scoreCourtPlans = (
   pendingMatches: PendingMatch[],
   teamStates: TeamScheduleState[],
   venueLookup: Map<ThreeCourtId, string>,
+  previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
 ) => {
   const options = createCourtPlanOptions(selectedIndexes)
   let bestCourtPlans = options[0]
   let bestScore = Number.POSITIVE_INFINITY
+
+  const shouldScoreCourtTurnover = new Set(venueLookup.values()).size === 1
 
   for (const option of options) {
     let optionScore = 0
@@ -604,6 +658,13 @@ const scoreCourtPlans = (
     for (const courtPlan of option) {
       const match = pendingMatches[courtPlan.selectedIndex]
       const venueName = venueLookup.get(courtPlan.court) ?? DEFAULT_VENUE_NAME
+
+      if (shouldScoreCourtTurnover) {
+        optionScore += scoreCourtTurnover(
+          previousCourtTeamIndexes.get(courtPlan.court),
+          getCourtTeamIndexes(match),
+        )
+      }
 
       for (const teamIndex of getMatchTeamIndexes(match)) {
         optionScore += scoreCourtForTeam(teamStates[teamIndex], courtPlan.court, venueName)
@@ -629,9 +690,16 @@ const scoreSlotPlan = (
   lastCardSlots: Map<string, number>,
   slotNumber: number,
   venueLookup: Map<ThreeCourtId, string>,
+  previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
 ): SlotPlan => {
   const selectedMatches = selectedIndexes.map((selectedIndex) => pendingMatches[selectedIndex])
-  const courtPlanResult = scoreCourtPlans(selectedIndexes, pendingMatches, teamStates, venueLookup)
+  const courtPlanResult = scoreCourtPlans(
+    selectedIndexes,
+    pendingMatches,
+    teamStates,
+    venueLookup,
+    previousCourtTeamIndexes,
+  )
   const score =
     scoreRestPlan(selectedMatches, teamStates) +
     scorePlayStreaks(selectedMatches, teamStates) +
@@ -658,6 +726,7 @@ const evaluateCombination = (
   lastCardSlots: Map<string, number>,
   slotNumber: number,
   venueLookup: Map<ThreeCourtId, string>,
+  previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
   requiredFullMatchCount: number | null,
 ) => {
   const matches = indexes.map((index) => pendingMatches[index])
@@ -687,6 +756,7 @@ const evaluateCombination = (
     lastCardSlots,
     slotNumber,
     venueLookup,
+    previousCourtTeamIndexes,
   )
 
   return {
@@ -701,6 +771,7 @@ const findBestPlanForMatchCount = (
   lastCardSlots: Map<string, number>,
   slotNumber: number,
   venueLookup: Map<ThreeCourtId, string>,
+  previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
   matchCount: number,
   windowSize: number,
   requiredFullMatchCount: number | null,
@@ -716,6 +787,7 @@ const findBestPlanForMatchCount = (
         lastCardSlots,
         slotNumber,
         venueLookup,
+        previousCourtTeamIndexes,
         requiredFullMatchCount,
       )
 
@@ -737,6 +809,7 @@ const findBestPlanForMatchCount = (
           lastCardSlots,
           slotNumber,
           venueLookup,
+          previousCourtTeamIndexes,
           requiredFullMatchCount,
         )
 
@@ -763,6 +836,7 @@ const findBestPlanForMatchCount = (
           lastCardSlots,
           slotNumber,
           venueLookup,
+          previousCourtTeamIndexes,
           requiredFullMatchCount,
         )
 
@@ -782,6 +856,7 @@ const chooseMatchesForSlot = (
   lastCardSlots: Map<string, number>,
   slotNumber: number,
   venueLookup: Map<ThreeCourtId, string>,
+  previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
 ) => {
   const targetMatchCount = Math.min(
     THREE_COURTS.length,
@@ -797,6 +872,7 @@ const chooseMatchesForSlot = (
       lastCardSlots,
       slotNumber,
       venueLookup,
+      previousCourtTeamIndexes,
       matchCount,
       candidateWindowSize,
       matchCount === targetMatchCount ? targetMatchCount : null,
@@ -813,6 +889,7 @@ const chooseMatchesForSlot = (
       lastCardSlots,
       slotNumber,
       venueLookup,
+      previousCourtTeamIndexes,
       matchCount,
       fallbackWindowSize,
       matchCount === targetMatchCount ? targetMatchCount : null,
@@ -838,6 +915,26 @@ const createEmptyAssignment = (court: ThreeCourtId): CourtAssignment => ({
   match: null,
 })
 
+const createInitialPreviousCourtTeamIndexes = () =>
+  new Map<ThreeCourtId, CourtTeamIndexes | null>(
+    THREE_COURTS.map((court) => [court, null]),
+  )
+
+const updatePreviousCourtTeamIndexes = (
+  previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
+  pendingMatches: PendingMatch[],
+  courtPlans: CourtPlan[],
+) => {
+  THREE_COURTS.forEach((court) => previousCourtTeamIndexes.set(court, null))
+
+  courtPlans.forEach((courtPlan) => {
+    previousCourtTeamIndexes.set(
+      courtPlan.court,
+      getCourtTeamIndexes(pendingMatches[courtPlan.selectedIndex]),
+    )
+  })
+}
+
 const buildCourtAssignments = (
   pendingMatches: PendingMatch[],
   courtPlans: CourtPlan[],
@@ -855,6 +952,319 @@ const buildCourtAssignments = (
       match: toScheduleMatch(pendingMatches[courtPlan.selectedIndex], teams),
     }
   })
+
+
+const createAlwaysActiveMatchSlots = (
+  teamCount: number,
+  roundCount: number,
+): PendingMatch[][] => {
+  const roundRobinRounds = createRoundRobinRounds(teamCount)
+  const slots: PendingMatch[][] = []
+  let sequence = 0
+
+  for (let repeatIndex = 0; repeatIndex < roundCount; repeatIndex += 1) {
+    roundRobinRounds.forEach((roundPairs, roundIndex) => {
+      const slotMatches = roundPairs.map(([teamAIndex, teamBIndex], pairIndex) => {
+        const matchSequence = sequence
+        sequence += 1
+
+        return {
+          id:
+            'match-' +
+            String(repeatIndex + 1) +
+            '-' +
+            String(roundIndex + 1) +
+            '-' +
+            String(pairIndex + 1),
+          teamAIndex,
+          teamBIndex,
+          cardKey: createCardKey(teamAIndex, teamBIndex),
+          repeatIndex,
+          sequence: matchSequence,
+        }
+      })
+
+      slots.push(slotMatches)
+    })
+  }
+
+  return slots
+}
+
+const getCourtCode = (court: ThreeCourtId) => THREE_COURTS.indexOf(court) + 1
+
+const createVenueCodeLookup = (venueLookup: Map<ThreeCourtId, string>) => {
+  const codeByVenueName = new Map<string, number>()
+  const codeByCourt = new Map<ThreeCourtId, number>()
+
+  THREE_COURTS.forEach((court) => {
+    const venueName = venueLookup.get(court) ?? DEFAULT_VENUE_NAME
+    let venueCode = codeByVenueName.get(venueName)
+
+    if (venueCode === undefined) {
+      venueCode = codeByVenueName.size + 1
+      codeByVenueName.set(venueName, venueCode)
+    }
+
+    codeByCourt.set(court, venueCode)
+  })
+
+  return codeByCourt
+}
+
+const sumValues = (values: readonly number[]) =>
+  values.reduce((total, value) => total + value, 0)
+
+const maxValue = (values: readonly number[]) => Math.max(...values)
+
+const getVenueUseSpread = (state: AlwaysActiveCourtState) => {
+  const venueCount = state.teamVenueUseCounts[0]?.length ?? 0
+  let spread = 0
+
+  for (let venueIndex = 0; venueIndex < venueCount; venueIndex += 1) {
+    spread += calculateSpread(
+      state.teamVenueUseCounts.map((venueCounts) => venueCounts[venueIndex] ?? 0),
+    )
+  }
+
+  return spread
+}
+
+const getAlwaysActiveStateSortValues = (state: AlwaysActiveCourtState) => [
+  sumValues(state.teamVenueRoundTrips),
+  maxValue(state.teamVenueRoundTrips),
+  maxValue(state.teamVenueMoves),
+  getVenueUseSpread(state),
+  sumValues(state.teamVenueMoves),
+  calculateSpread(state.teamVenueMoves),
+  state.sameCourtCardRepeatCount,
+  state.twoTeamChangeCount,
+  -state.oneTeamChangeCount,
+  maxValue(state.teamCourtMoves),
+  sumValues(state.teamCourtMoves),
+  calculateSpread(state.teamCourtMoves),
+  state.orderScore,
+]
+
+const compareAlwaysActiveCourtStates = (
+  first: AlwaysActiveCourtState,
+  second: AlwaysActiveCourtState,
+) => {
+  const firstValues = getAlwaysActiveStateSortValues(first)
+  const secondValues = getAlwaysActiveStateSortValues(second)
+
+  for (let index = 0; index < firstValues.length; index += 1) {
+    const difference = firstValues[index] - secondValues[index]
+
+    if (difference !== 0) {
+      return difference
+    }
+  }
+
+  return 0
+}
+
+const createAlwaysActiveStateKey = (state: AlwaysActiveCourtState) =>
+  [
+    state.lastCourts.join(','),
+    state.lastVenues.join(','),
+    state.previousVenues.join(','),
+    state.lastCourtTeamIndexes
+      .map((teamIndexes) => teamIndexes?.join('-') ?? 'empty')
+      .join(','),
+  ].join('|')
+
+const scoreAlwaysActiveCourtPlanOrder = (courtPlans: readonly CourtPlan[]) =>
+  courtPlans.reduce(
+    (score, courtPlan, index) =>
+      score + getCourtCode(courtPlan.court) * (courtPlan.selectedIndex + 1) * (index + 1) * 0.001,
+    0,
+  )
+
+const limitAlwaysActiveCourtStates = (
+  states: Map<string, AlwaysActiveCourtState>,
+) => {
+  if (states.size <= ALWAYS_ACTIVE_COURT_STATE_LIMIT) {
+    return states
+  }
+
+  return new Map(
+    [...states.values()]
+      .sort(compareAlwaysActiveCourtStates)
+      .slice(0, ALWAYS_ACTIVE_COURT_STATE_LIMIT)
+      .map((state) => [createAlwaysActiveStateKey(state), state]),
+  )
+}
+
+const createAlwaysActiveCourtPlanSlots = (
+  matchSlots: PendingMatch[][],
+  teamCount: number,
+  venueLookup: Map<ThreeCourtId, string>,
+) => {
+  const initialCourts = Array.from({ length: teamCount }, () => 0)
+  const initialVenues = Array.from({ length: teamCount }, () => 0)
+  const venueCodeLookup = createVenueCodeLookup(venueLookup)
+  const venueCount = Math.max(...venueCodeLookup.values())
+  let states = new Map<string, AlwaysActiveCourtState>()
+
+  const initialState: AlwaysActiveCourtState = {
+    lastCourts: initialCourts,
+    lastVenues: initialVenues,
+    previousVenues: initialVenues,
+    teamCourtMoves: Array.from({ length: teamCount }, () => 0),
+    teamVenueMoves: Array.from({ length: teamCount }, () => 0),
+    teamVenueRoundTrips: Array.from({ length: teamCount }, () => 0),
+    teamVenueUseCounts: Array.from({ length: teamCount }, () =>
+      Array.from({ length: venueCount }, () => 0),
+    ),
+    lastCourtTeamIndexes: THREE_COURTS.map(() => null),
+    oneTeamChangeCount: 0,
+    twoTeamChangeCount: 0,
+    sameCourtCardRepeatCount: 0,
+    orderScore: 0,
+    courtPlanSlots: [],
+  }
+
+  states.set(createAlwaysActiveStateKey(initialState), initialState)
+
+  for (const selectedMatches of matchSlots) {
+    const nextStates = new Map<string, AlwaysActiveCourtState>()
+    const courtPlanOptions = createCourtPlanOptions(
+      selectedMatches.map((_, matchIndex) => matchIndex),
+    )
+
+    for (const state of states.values()) {
+      for (const courtPlans of courtPlanOptions) {
+        const nextLastCourts = [...state.lastCourts]
+        const nextLastVenues = [...state.lastVenues]
+        const nextPreviousVenues = [...state.previousVenues]
+        const nextLastCourtTeamIndexes: Array<CourtTeamIndexes | null> = THREE_COURTS.map(() => null)
+        const nextTeamCourtMoves = [...state.teamCourtMoves]
+        const nextTeamVenueMoves = [...state.teamVenueMoves]
+        const nextTeamVenueRoundTrips = [...state.teamVenueRoundTrips]
+        const nextTeamVenueUseCounts = state.teamVenueUseCounts.map((venueCounts) => [
+          ...venueCounts,
+        ])
+        let oneTeamChangeCount = state.oneTeamChangeCount
+        let twoTeamChangeCount = state.twoTeamChangeCount
+        let sameCourtCardRepeatCount = state.sameCourtCardRepeatCount
+
+        for (const courtPlan of courtPlans) {
+          const match = selectedMatches[courtPlan.selectedIndex]
+          const courtCode = getCourtCode(courtPlan.court)
+          const courtIndex = courtCode - 1
+          const venueCode = venueCodeLookup.get(courtPlan.court) ?? 1
+          const courtTeamIndexes = getCourtTeamIndexes(match)
+          const previousCourtTeamIndexes = state.lastCourtTeamIndexes[courtIndex]
+
+          if (previousCourtTeamIndexes !== null) {
+            const sharedTeamCount = countSharedCourtTeams(
+              previousCourtTeamIndexes,
+              courtTeamIndexes,
+            )
+
+            if (sharedTeamCount === 2) {
+              sameCourtCardRepeatCount += 1
+            } else if (sharedTeamCount === 1) {
+              oneTeamChangeCount += 1
+            } else {
+              twoTeamChangeCount += 1
+            }
+          }
+
+          nextLastCourtTeamIndexes[courtIndex] = courtTeamIndexes
+
+          for (const teamIndex of getMatchTeamIndexes(match)) {
+            const lastCourt = nextLastCourts[teamIndex]
+            const lastVenue = nextLastVenues[teamIndex]
+            const previousVenue = nextPreviousVenues[teamIndex]
+
+            if (lastCourt !== 0 && lastCourt !== courtCode) {
+              nextTeamCourtMoves[teamIndex] += 1
+            }
+
+            if (lastVenue !== 0 && lastVenue !== venueCode) {
+              nextTeamVenueMoves[teamIndex] += 1
+
+              if (previousVenue === venueCode) {
+                nextTeamVenueRoundTrips[teamIndex] += 1
+              }
+            }
+
+            nextTeamVenueUseCounts[teamIndex][venueCode - 1] += 1
+            nextPreviousVenues[teamIndex] = lastVenue
+            nextLastCourts[teamIndex] = courtCode
+            nextLastVenues[teamIndex] = venueCode
+          }
+        }
+
+        const nextState: AlwaysActiveCourtState = {
+          lastCourts: nextLastCourts,
+          lastVenues: nextLastVenues,
+          previousVenues: nextPreviousVenues,
+          teamCourtMoves: nextTeamCourtMoves,
+          teamVenueMoves: nextTeamVenueMoves,
+          teamVenueRoundTrips: nextTeamVenueRoundTrips,
+          teamVenueUseCounts: nextTeamVenueUseCounts,
+          lastCourtTeamIndexes: nextLastCourtTeamIndexes,
+          oneTeamChangeCount,
+          twoTeamChangeCount,
+          sameCourtCardRepeatCount,
+          orderScore: state.orderScore + scoreAlwaysActiveCourtPlanOrder(courtPlans),
+          courtPlanSlots: [...state.courtPlanSlots, courtPlans],
+        }
+        const stateKey = createAlwaysActiveStateKey(nextState)
+        const currentState = nextStates.get(stateKey)
+
+        if (
+          currentState === undefined ||
+          compareAlwaysActiveCourtStates(nextState, currentState) < 0
+        ) {
+          nextStates.set(stateKey, nextState)
+        }
+      }
+    }
+
+    states = limitAlwaysActiveCourtStates(nextStates)
+  }
+
+  const [bestState] = [...states.values()].sort(compareAlwaysActiveCourtStates)
+
+  return bestState?.courtPlanSlots ?? []
+}
+
+const buildAlwaysActiveCourtAssignments = (
+  selectedMatches: PendingMatch[],
+  courtPlans: CourtPlan[],
+  teams: Team[],
+): CourtAssignment[] =>
+  THREE_COURTS.map((court) => {
+    const courtPlan = courtPlans.find((plan) => plan.court === court)
+
+    if (courtPlan === undefined) {
+      return createEmptyAssignment(court)
+    }
+
+    return {
+      court,
+      match: toScheduleMatch(selectedMatches[courtPlan.selectedIndex], teams),
+    }
+  })
+
+const createAlwaysActiveScheduleSlots = (
+  teams: Team[],
+  roundCount: number,
+  venueLookup: Map<ThreeCourtId, string>,
+): ScheduleSlot[] => {
+  const matchSlots = createAlwaysActiveMatchSlots(teams.length, roundCount)
+  const courtPlanSlots = createAlwaysActiveCourtPlanSlots(matchSlots, teams.length, venueLookup)
+
+  return matchSlots.map((selectedMatches, slotIndex) => ({
+    slotNumber: slotIndex + 1,
+    courts: buildAlwaysActiveCourtAssignments(selectedMatches, courtPlanSlots[slotIndex], teams),
+    restingTeams: [],
+  }))
+}
 
 const updateScheduleState = (
   pendingMatches: PendingMatch[],
@@ -918,6 +1328,9 @@ const removeSelectedMatches = (
 type ScheduleQuality = {
   score: number
   invalidSlotCount: number
+  sameCourtCardConsecutiveCount: number
+  oneTeamChangeCount: number
+  twoTeamChangeCount: number
   sameCardConsecutiveCount: number
   repeatsWithin2Slots: number
   minRepeatGap: number | null
@@ -998,9 +1411,14 @@ const calculateScheduleQuality = (
   )
   const lastCardSlots = new Map<string, number>()
   let invalidSlotCount = 0
+  let sameCourtCardConsecutiveCount = 0
+  let oneTeamChangeCount = 0
+  let twoTeamChangeCount = 0
   let sameCardConsecutiveCount = 0
   let repeatsWithin2Slots = 0
   let minRepeatGap: number | null = null
+  const lastCourtTeamIds = new Map<string, string[]>()
+  const lastCourtCardKeys = new Map<string, string>()
 
   for (const slot of slots) {
     if (hasSlotTeamDuplication(slot)) {
@@ -1014,6 +1432,28 @@ const calculateScheduleQuality = (
       if (assignment.match === null) {
         continue
       }
+
+      const previousCourtTeamIds = lastCourtTeamIds.get(assignment.court)
+      const nextCourtTeamIds = [assignment.match.teamA.id, assignment.match.teamB.id]
+
+      if (previousCourtTeamIds !== undefined) {
+        const sharedTeamCount = nextCourtTeamIds.filter((teamId) =>
+          previousCourtTeamIds.includes(teamId),
+        ).length
+        const repeatsSameCourtCard =
+          lastCourtCardKeys.get(assignment.court) === assignment.match.cardKey
+
+        if (repeatsSameCourtCard || sharedTeamCount === 2) {
+          sameCourtCardConsecutiveCount += 1
+        } else if (sharedTeamCount === 1) {
+          oneTeamChangeCount += 1
+        } else {
+          twoTeamChangeCount += 1
+        }
+      }
+
+      lastCourtTeamIds.set(assignment.court, nextCourtTeamIds)
+      lastCourtCardKeys.set(assignment.court, assignment.match.cardKey)
 
       const lastCardSlot = lastCardSlots.get(assignment.match.cardKey)
       if (lastCardSlot !== undefined) {
@@ -1100,15 +1540,21 @@ const calculateScheduleQuality = (
     Math.max(0, maxRestStreak - 1) * 500_000 +
     restSpread * 180_000 +
     playSpread * 120_000 +
-    sameCardConsecutiveCount * 320_000 +
-    repeatsWithin2Slots * 72_000 +
+    sameCardConsecutiveCount * 2_000_000 +
+    repeatsWithin2Slots * 180_000 +
     totalVenueRoundTrips * 220_000 +
     totalVenueMoves * 520 +
+    sameCourtCardConsecutiveCount * 320_000 +
+    twoTeamChangeCount * 520 -
+    oneTeamChangeCount * 140 +
     totalCourtMoves * 70
 
   return {
     score,
     invalidSlotCount,
+    sameCourtCardConsecutiveCount,
+    oneTeamChangeCount,
+    twoTeamChangeCount,
     sameCardConsecutiveCount,
     repeatsWithin2Slots,
     minRepeatGap,
@@ -1129,6 +1575,7 @@ const keepsCriticalQuality = (candidate: ScheduleQuality, baseline: ScheduleQual
   candidate.restSpread <= baseline.restSpread &&
   candidate.playSpread <= baseline.playSpread &&
   candidate.sameCardConsecutiveCount <= baseline.sameCardConsecutiveCount &&
+  candidate.sameCourtCardConsecutiveCount <= baseline.sameCourtCardConsecutiveCount &&
   candidate.repeatsWithin2Slots <= baseline.repeatsWithin2Slots &&
   candidate.totalVenueRoundTrips <= baseline.totalVenueRoundTrips
 
@@ -1222,9 +1669,27 @@ export const generateThreeCourtSchedule = ({
   const teams = normalizeTeamNames(teamNames)
   const normalizedCourtVenues = normalizeCourtVenues(courtVenues)
   const venueLookup = createVenueLookup(normalizedCourtVenues)
+
+  if (isAlwaysActiveTeamCount(courtCount, teams.length)) {
+    const slots = createAlwaysActiveScheduleSlots(teams, roundCount, venueLookup)
+
+    return {
+      courtCount: 3,
+      roundCount,
+      teams,
+      slots,
+      totalMatches: slots.reduce(
+        (total, slot) => total + slot.courts.filter((assignment) => assignment.match !== null).length,
+        0,
+      ),
+      courtVenues: normalizedCourtVenues,
+    }
+  }
+
   const pendingMatches = createPendingMatches(teams.length, roundCount)
   const teamStates = createTeamStates(teams.length)
   const lastCardSlots = new Map<string, number>()
+  const previousCourtTeamIndexes = createInitialPreviousCourtTeamIndexes()
   const slots: ScheduleSlot[] = []
 
   while (pendingMatches.length > 0) {
@@ -1235,6 +1700,7 @@ export const generateThreeCourtSchedule = ({
       lastCardSlots,
       slotNumber,
       venueLookup,
+      previousCourtTeamIndexes,
     )
     const courtAssignments = buildCourtAssignments(pendingMatches, slotPlan.courtPlans, teams)
     const playingTeamIndexes = collectPlayingTeamIndexes(
@@ -1255,6 +1721,11 @@ export const generateThreeCourtSchedule = ({
       lastCardSlots,
       slotNumber,
       venueLookup,
+    )
+    updatePreviousCourtTeamIndexes(
+      previousCourtTeamIndexes,
+      pendingMatches,
+      slotPlan.courtPlans,
     )
     removeSelectedMatches(pendingMatches, slotPlan.selectedIndexes)
   }

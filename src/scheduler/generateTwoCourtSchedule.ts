@@ -126,10 +126,16 @@ type MatchCourtPlan = {
   court: TwoCourtId
 }
 
+type CourtTeamIndexes = readonly [number, number]
+
 type CourtAssignmentSearchState = {
   lastCourts: number[]
+  lastCourtTeamIndexes: Array<CourtTeamIndexes | null>
   teamMoves: number[]
   moveCount: number
+  oneTeamChangeCount: number
+  twoTeamChangeCount: number
+  sameCourtCardRepeatCount: number
   orderScore: number
   courtPlans: MatchCourtPlan[][]
 }
@@ -588,26 +594,56 @@ const getMaxTeamMoveCount = (state: CourtAssignmentSearchState) => Math.max(...s
 const getTeamMoveSpread = (state: CourtAssignmentSearchState) =>
   calculateSpread(state.teamMoves)
 
+const getCourtTeamIndexes = (match: PendingMatch): CourtTeamIndexes => [
+  match.teamAIndex,
+  match.teamBIndex,
+]
+
+const countSharedCourtTeams = (
+  previousTeams: CourtTeamIndexes,
+  nextTeams: CourtTeamIndexes,
+) =>
+  nextTeams.filter((teamIndex) => previousTeams.includes(teamIndex)).length
+
+const getCourtAssignmentStateSortValues = (state: CourtAssignmentSearchState) => [
+  state.sameCourtCardRepeatCount,
+  state.twoTeamChangeCount,
+  -state.oneTeamChangeCount,
+  getMaxTeamMoveCount(state),
+  state.moveCount,
+  getTeamMoveSpread(state),
+  state.orderScore,
+]
+
+const compareCourtAssignmentStates = (
+  first: CourtAssignmentSearchState,
+  second: CourtAssignmentSearchState,
+) => {
+  const firstValues = getCourtAssignmentStateSortValues(first)
+  const secondValues = getCourtAssignmentStateSortValues(second)
+
+  for (let index = 0; index < firstValues.length; index += 1) {
+    const difference = firstValues[index] - secondValues[index]
+
+    if (difference !== 0) {
+      return difference
+    }
+  }
+
+  return 0
+}
+
 const isBetterCourtAssignmentState = (
   candidate: CourtAssignmentSearchState,
   current: CourtAssignmentSearchState,
-) =>
-  getMaxTeamMoveCount(candidate) < getMaxTeamMoveCount(current) ||
-  (
-    getMaxTeamMoveCount(candidate) === getMaxTeamMoveCount(current) &&
-    candidate.moveCount < current.moveCount
-  ) ||
-  (
-    getMaxTeamMoveCount(candidate) === getMaxTeamMoveCount(current) &&
-    candidate.moveCount === current.moveCount &&
-    getTeamMoveSpread(candidate) < getTeamMoveSpread(current)
-  ) ||
-  (
-    getMaxTeamMoveCount(candidate) === getMaxTeamMoveCount(current) &&
-    candidate.moveCount === current.moveCount &&
-    getTeamMoveSpread(candidate) === getTeamMoveSpread(current) &&
-    candidate.orderScore < current.orderScore
-  )
+) => compareCourtAssignmentStates(candidate, current) < 0
+
+const createCourtAssignmentStateKey = (state: CourtAssignmentSearchState) => [
+  state.lastCourts.join(','),
+  state.lastCourtTeamIndexes
+    .map((teamIndexes) => teamIndexes?.join('-') ?? 'empty')
+    .join(','),
+].join('|')
 
 const createOptimizedCourtPlanSlots = (
   matchSlots: PendingMatch[][],
@@ -615,14 +651,19 @@ const createOptimizedCourtPlanSlots = (
 ) => {
   let states = new Map<string, CourtAssignmentSearchState>()
   const initialLastCourts = Array.from({ length: teamCount }, () => 0)
-
-  states.set(initialLastCourts.join(','), {
+  const initialState: CourtAssignmentSearchState = {
     lastCourts: initialLastCourts,
+    lastCourtTeamIndexes: TWO_COURTS.map(() => null),
     teamMoves: Array.from({ length: teamCount }, () => 0),
     moveCount: 0,
+    oneTeamChangeCount: 0,
+    twoTeamChangeCount: 0,
+    sameCourtCardRepeatCount: 0,
     orderScore: 0,
     courtPlans: [],
-  })
+  }
+
+  states.set(createCourtAssignmentStateKey(initialState), initialState)
 
   for (const selectedMatches of matchSlots) {
     const nextStates = new Map<string, CourtAssignmentSearchState>()
@@ -630,12 +671,36 @@ const createOptimizedCourtPlanSlots = (
     for (const state of states.values()) {
       for (const courtPlans of createCourtPlanOptions(selectedMatches)) {
         const nextLastCourts = [...state.lastCourts]
+        const nextLastCourtTeamIndexes: Array<CourtTeamIndexes | null> = TWO_COURTS.map(() => null)
         const nextTeamMoves = [...state.teamMoves]
         let moveCount = state.moveCount
+        let oneTeamChangeCount = state.oneTeamChangeCount
+        let twoTeamChangeCount = state.twoTeamChangeCount
+        let sameCourtCardRepeatCount = state.sameCourtCardRepeatCount
 
         for (const courtPlan of courtPlans) {
           const match = selectedMatches[courtPlan.matchIndex]
           const courtCode = getCourtCode(courtPlan.court)
+          const courtIndex = courtCode - 1
+          const courtTeamIndexes = getCourtTeamIndexes(match)
+          const previousCourtTeamIndexes = state.lastCourtTeamIndexes[courtIndex]
+
+          if (previousCourtTeamIndexes !== null) {
+            const sharedTeamCount = countSharedCourtTeams(
+              previousCourtTeamIndexes,
+              courtTeamIndexes,
+            )
+
+            if (sharedTeamCount === 2) {
+              sameCourtCardRepeatCount += 1
+            } else if (sharedTeamCount === 1) {
+              oneTeamChangeCount += 1
+            } else {
+              twoTeamChangeCount += 1
+            }
+          }
+
+          nextLastCourtTeamIndexes[courtIndex] = courtTeamIndexes
 
           for (const teamIndex of getMatchTeamIndexes(match)) {
             const lastCourt = nextLastCourts[teamIndex]
@@ -649,14 +714,18 @@ const createOptimizedCourtPlanSlots = (
           }
         }
 
-        const stateKey = nextLastCourts.join(',')
         const nextState: CourtAssignmentSearchState = {
           lastCourts: nextLastCourts,
+          lastCourtTeamIndexes: nextLastCourtTeamIndexes,
           teamMoves: nextTeamMoves,
           moveCount,
+          oneTeamChangeCount,
+          twoTeamChangeCount,
+          sameCourtCardRepeatCount,
           orderScore: state.orderScore + scoreCourtPlanOrder(courtPlans),
           courtPlans: [...state.courtPlans, courtPlans],
         }
+        const stateKey = createCourtAssignmentStateKey(nextState)
         const currentState = nextStates.get(stateKey)
 
         if (
@@ -671,12 +740,7 @@ const createOptimizedCourtPlanSlots = (
     states = nextStates
   }
 
-  const [bestState] = [...states.values()].sort((first, second) =>
-    getMaxTeamMoveCount(first) - getMaxTeamMoveCount(second) ||
-    first.moveCount - second.moveCount ||
-    getTeamMoveSpread(first) - getTeamMoveSpread(second) ||
-    first.orderScore - second.orderScore,
-  )
+  const [bestState] = [...states.values()].sort(compareCourtAssignmentStates)
 
   return bestState?.courtPlans ?? []
 }
