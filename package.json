@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "tsc -p tsconfig.scheduler-test.json && node -e \"require('node:fs').writeFileSync('node_modules/.tmp/scheduler-tests/package.json', JSON.stringify({type:'commonjs'}))\" && node --test node_modules/.tmp/scheduler-tests/tests/scheduler/scheduler.test.js"
   },
   "dependencies": {
     "react": "^19.2.8",
