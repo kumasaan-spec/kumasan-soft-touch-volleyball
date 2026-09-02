@@ -1,6 +1,7 @@
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import './App.css'
 import { generateOneCourtSchedule } from './scheduler/generateOneCourtSchedule'
+import { generateFourCourtSchedule } from './scheduler/generateFourCourtSchedule'
 import { generateThreeCourtSchedule } from './scheduler/generateThreeCourtSchedule'
 import { generateTwoCourtSchedule } from './scheduler/generateTwoCourtSchedule'
 import { isAlwaysActiveTeamCount } from './scheduler/teamUtils'
@@ -14,8 +15,11 @@ import type {
 
 const COURT_OPTIONS = [1, 2, 3, 4] as const
 const ACTIVE_COURTS = ['A', 'B', 'C', 'D'] as const
-const THREE_COURTS = ['A', 'B', 'C'] as const
+const VENUE_CONFIGURABLE_COURTS = ['A', 'B', 'C', 'D'] as const
 const VENUE_OPTIONS = ['会場1', '会場2'] as const
+const X_PROFILE_URL = 'https://x.com/kumasansofttouch'
+const X_SHARE_TEXT =
+  'バレーボール練習試合の組み合わせ作成\n#バレーボール #練習試合 #組み合わせ作成 #スポ少 #小学生バレー'
 const DEFAULT_COURT_VENUES: Record<CourtId, string> = {
   A: '会場1',
   B: '会場1',
@@ -26,6 +30,7 @@ const ROUND_PRESETS = [1, 2, 3, 4, 5] as const
 const MAX_TEAM_COUNT = 32
 const MIN_ROUND_COUNT = 1
 const MAX_ROUND_COUNT = 10
+const PRINT_RESTING_TEAM_NAME_LIMIT = 10
 
 const MIN_TEAM_COUNT_BY_COURT: Record<CourtNumber, number> = {
   1: 2,
@@ -71,6 +76,19 @@ type CourtMatchDisplayProps = {
   court: CourtId
 }
 
+type ResultActionsProps = {
+  onBack: () => void
+}
+
+type ScheduleTableColumnsProps = {
+  courtCount: CourtNumber
+  shouldShowRestingTeams: boolean
+}
+
+type MatchNumberCellProps = {
+  slotNumber: number
+}
+
 const clampNumber = (value: number, min: number, max: number) => {
   if (!Number.isFinite(value)) {
     return min
@@ -102,13 +120,34 @@ const formatRestingTeams = (slot: ScheduleSlot) => {
   return slot.restingTeams.map((team) => team.name).join('、')
 }
 
+const truncateTeamNameForPrint = (teamName: string) => {
+  const characters = Array.from(teamName)
+
+  if (characters.length <= PRINT_RESTING_TEAM_NAME_LIMIT) {
+    return teamName
+  }
+
+  return characters.slice(0, PRINT_RESTING_TEAM_NAME_LIMIT).join("") + "…"
+}
+
+const formatPrintRestingTeams = (slot: ScheduleSlot) => {
+  if (slot.restingTeams.length === 0) {
+    return "なし"
+  }
+
+  return slot.restingTeams
+    .map((team) => truncateTeamNameForPrint(team.name))
+    .join("、")
+}
+
 const getCourtAssignment = (slot: ScheduleSlot, court: CourtId) =>
   slot.courts.find((assignment) => assignment.court === court)
 
 const createCourtVenueSettings = (
+  courtCount: CourtNumber,
   courtVenues: Record<CourtId, string>,
 ): CourtVenueSetting[] =>
-  THREE_COURTS.map((court) => ({
+  ACTIVE_COURTS.slice(0, courtCount).map((court) => ({
     court,
     venueName: courtVenues[court],
   }))
@@ -116,12 +155,36 @@ const createCourtVenueSettings = (
 const formatCourtLabel = (result: ScheduleGenerationResult, court: CourtId) => {
   const venueName = result.courtVenues?.find((setting) => setting.court === court)?.venueName
 
-  if (result.courtCount === 3 && venueName !== undefined) {
+  if ((result.courtCount === 3 || result.courtCount === 4) && venueName !== undefined) {
     return court + 'コート（' + venueName + '）'
   }
 
   return court + 'コート'
 }
+
+const hasAnyRestingTeams = (result: ScheduleGenerationResult) =>
+  result.slots.some((slot) => slot.restingTeams.length > 0)
+
+const getPrintPageClass = (result: ScheduleGenerationResult) =>
+  result.courtCount >= 3 ? 'print-page-landscape' : 'print-page-portrait'
+
+const getScheduleTableClassName = (
+  courtCount: CourtNumber,
+  shouldShowRestingTeams: boolean,
+) =>
+  "schedule-table schedule-table-courts-" +
+  courtCount +
+  (shouldShowRestingTeams ? " has-rest-column" : " no-rest-column")
+
+const printSchedule = () => {
+  window.print()
+}
+
+const createXShareUrl = () =>
+  'https://x.com/intent/tweet?text=' +
+  encodeURIComponent(X_SHARE_TEXT) +
+  '&url=' +
+  encodeURIComponent(window.location.href)
 
 function NumberSelector({
   id,
@@ -182,9 +245,12 @@ function CourtMatchDisplay({ slot, court }: CourtMatchDisplayProps) {
 
   return (
     <span className="match-card">
-      <span>{assignment.match.teamA.name}</span>
-      <span className="versus">vs</span>
-      <span>{assignment.match.teamB.name}</span>
+      <span className="match-teams">
+        <span>{assignment.match.teamA.name}</span>
+        <span className="versus">vs</span>
+        <span>{assignment.match.teamB.name}</span>
+      </span>
+      <span className="score-space print-only" aria-hidden="true" />
     </span>
   )
 }
@@ -198,16 +264,88 @@ function OneCourtMatchDisplay({ slot }: { slot: ScheduleSlot }) {
 
   return (
     <span className="match-card">
-      <span>{match.teamA.name}</span>
-      <span className="versus">vs</span>
-      <span>{match.teamB.name}</span>
+      <span className="match-teams">
+        <span>{match.teamA.name}</span>
+        <span className="versus">vs</span>
+        <span>{match.teamB.name}</span>
+      </span>
+      <span className="score-space print-only" aria-hidden="true" />
     </span>
   )
 }
 
-function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function ScheduleTableColumns({
+  courtCount,
+  shouldShowRestingTeams,
+}: ScheduleTableColumnsProps) {
   return (
-    <section className="result-panel" aria-labelledby="schedule-title">
+    <colgroup>
+      <col className="match-number-column" />
+      {ACTIVE_COURTS.slice(0, courtCount).map((court) => (
+        <col className="court-column" key={court} />
+      ))}
+      {shouldShowRestingTeams && <col className="rest-column" />}
+    </colgroup>
+  )
+}
+
+function MatchNumberCell({ slotNumber }: MatchNumberCellProps) {
+  return (
+    <th className="match-number-cell" scope="row">
+      <span className="screen-only">第{slotNumber}試合</span>
+      <span className="print-match-number print-only" aria-hidden="true">
+        {slotNumber}
+      </span>
+    </th>
+  )
+}
+
+function RestingTeamsCell({ slot }: { slot: ScheduleSlot }) {
+  return (
+    <>
+      <span className="screen-only">{formatRestingTeams(slot)}</span>
+      <span className="print-resting-teams print-only" aria-hidden="true">
+        {formatPrintRestingTeams(slot)}
+      </span>
+    </>
+  )
+}
+
+function PrintScheduleHeader({ result }: { result: ScheduleGenerationResult }) {
+  return (
+    <div className="print-schedule-header print-only">
+      <div>
+        <p className="print-brand">kumasan soft touch</p>
+        <h2>練習試合 組み合わせ表</h2>
+      </div>
+      <p className="print-summary">
+        {result.courtCount}コート / {result.teams.length}チーム / {result.roundCount}周 / 全{result.totalMatches}対戦
+      </p>
+    </div>
+  )
+}
+
+function ResultActions({ onBack }: ResultActionsProps) {
+  return (
+    <div className="result-actions screen-only">
+      <div className="output-actions" aria-label="出力操作">
+        <button className="print-button" type="button" onClick={printSchedule}>
+          印刷する
+        </button>
+      </div>
+      <button className="secondary-button" type="button" onClick={onBack}>
+        入力画面へ戻る
+      </button>
+    </div>
+  )
+}
+
+function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+  const shouldShowRestingTeams = hasAnyRestingTeams(result)
+
+  return (
+    <section className={'result-panel ' + getPrintPageClass(result)} aria-labelledby="schedule-title">
+      <PrintScheduleHeader result={result} />
       <div className="result-heading">
         <div>
           <p className="result-kicker">1コート版</p>
@@ -217,28 +355,36 @@ function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
             {result.teams.length}チーム / {result.roundCount}周
           </p>
         </div>
-        <button className="secondary-button" type="button" onClick={onBack}>
-          入力画面へ戻る
-        </button>
+        <ResultActions onBack={onBack} />
       </div>
 
       <div className="schedule-table-wrap">
-        <table className="schedule-table">
+        <table className={getScheduleTableClassName(result.courtCount, shouldShowRestingTeams)}>
+          <ScheduleTableColumns
+            courtCount={result.courtCount}
+            shouldShowRestingTeams={shouldShowRestingTeams}
+          />
           <thead>
             <tr>
-              <th scope="col">試合順</th>
+              <th className="match-number-heading" scope="col">
+                <span className="screen-only">試合順</span>
+              </th>
               <th scope="col">対戦</th>
-              <th scope="col">休憩チーム</th>
+              {shouldShowRestingTeams && <th className="rest-heading" scope="col">休憩チーム</th>}
             </tr>
           </thead>
           <tbody>
             {result.slots.map((slot) => (
               <tr key={slot.slotNumber}>
-                <th scope="row">第{slot.slotNumber}試合</th>
+                <MatchNumberCell slotNumber={slot.slotNumber} />
                 <td data-label="対戦">
                   <OneCourtMatchDisplay slot={slot} />
                 </td>
-                <td data-label="休憩チーム">{formatRestingTeams(slot)}</td>
+                {shouldShowRestingTeams && (
+                  <td className="rest-cell" data-label="休憩チーム">
+                    <RestingTeamsCell slot={slot} />
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -249,8 +395,11 @@ function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
 }
 
 function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+  const shouldShowRestingTeams = hasAnyRestingTeams(result)
+
   return (
-    <section className="result-panel" aria-labelledby="schedule-title">
+    <section className={'result-panel ' + getPrintPageClass(result)} aria-labelledby="schedule-title">
+      <PrintScheduleHeader result={result} />
       <div className="result-heading">
         <div>
           <p className="result-kicker">2コート版</p>
@@ -260,32 +409,40 @@ function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
             {result.teams.length}チーム / {result.roundCount}周
           </p>
         </div>
-        <button className="secondary-button" type="button" onClick={onBack}>
-          入力画面へ戻る
-        </button>
+        <ResultActions onBack={onBack} />
       </div>
 
       <div className="schedule-table-wrap">
-        <table className="schedule-table">
+        <table className={getScheduleTableClassName(result.courtCount, shouldShowRestingTeams)}>
+          <ScheduleTableColumns
+            courtCount={result.courtCount}
+            shouldShowRestingTeams={shouldShowRestingTeams}
+          />
           <thead>
             <tr>
-              <th scope="col">試合順</th>
+              <th className="match-number-heading" scope="col">
+                <span className="screen-only">試合順</span>
+              </th>
               <th scope="col">Aコート</th>
               <th scope="col">Bコート</th>
-              <th scope="col">休憩チーム</th>
+              {shouldShowRestingTeams && <th className="rest-heading" scope="col">休憩チーム</th>}
             </tr>
           </thead>
           <tbody>
             {result.slots.map((slot) => (
               <tr key={slot.slotNumber}>
-                <th scope="row">第{slot.slotNumber}試合</th>
+                <MatchNumberCell slotNumber={slot.slotNumber} />
                 <td data-label="Aコート">
                   <CourtMatchDisplay slot={slot} court="A" />
                 </td>
                 <td data-label="Bコート">
                   <CourtMatchDisplay slot={slot} court="B" />
                 </td>
-                <td data-label="休憩チーム">{formatRestingTeams(slot)}</td>
+                {shouldShowRestingTeams && (
+                  <td className="rest-cell" data-label="休憩チーム">
+                    <RestingTeamsCell slot={slot} />
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -295,48 +452,61 @@ function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
   )
 }
 
-function ThreeCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function MultiCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+  const courts = ACTIVE_COURTS.slice(0, result.courtCount)
+  const shouldShowRestingTeams = hasAnyRestingTeams(result)
+
   return (
-    <section className="result-panel" aria-labelledby="schedule-title">
+    <section className={'result-panel ' + getPrintPageClass(result)} aria-labelledby="schedule-title">
+      <PrintScheduleHeader result={result} />
       <div className="result-heading">
         <div>
-          <p className="result-kicker">3コート版</p>
+          <p className="result-kicker">{result.courtCount}コート版</p>
           <h2 id="schedule-title">生成結果</h2>
           <p>
             第1～第{result.slots.length}試合 / 全{result.totalMatches}対戦 /{' '}
             {result.teams.length}チーム / {result.roundCount}周
           </p>
         </div>
-        <button className="secondary-button" type="button" onClick={onBack}>
-          入力画面へ戻る
-        </button>
+        <ResultActions onBack={onBack} />
       </div>
 
       <div className="schedule-table-wrap">
-        <table className="schedule-table three-court-schedule-table">
+        <table
+          className={
+            getScheduleTableClassName(result.courtCount, shouldShowRestingTeams) +
+            " multi-court-schedule-table"
+          }
+        >
+          <ScheduleTableColumns
+            courtCount={result.courtCount}
+            shouldShowRestingTeams={shouldShowRestingTeams}
+          />
           <thead>
             <tr>
-              <th scope="col">試合順</th>
-              <th scope="col">{formatCourtLabel(result, 'A')}</th>
-              <th scope="col">{formatCourtLabel(result, 'B')}</th>
-              <th scope="col">{formatCourtLabel(result, 'C')}</th>
-              <th scope="col">休憩チーム</th>
+              <th className="match-number-heading" scope="col">
+                <span className="screen-only">試合順</span>
+              </th>
+              {courts.map((court) => (
+                <th scope="col" key={court}>{formatCourtLabel(result, court)}</th>
+              ))}
+              {shouldShowRestingTeams && <th className="rest-heading" scope="col">休憩チーム</th>}
             </tr>
           </thead>
           <tbody>
             {result.slots.map((slot) => (
               <tr key={slot.slotNumber}>
-                <th scope="row">第{slot.slotNumber}試合</th>
-                <td data-label={formatCourtLabel(result, 'A')}>
-                  <CourtMatchDisplay slot={slot} court="A" />
-                </td>
-                <td data-label={formatCourtLabel(result, 'B')}>
-                  <CourtMatchDisplay slot={slot} court="B" />
-                </td>
-                <td data-label={formatCourtLabel(result, 'C')}>
-                  <CourtMatchDisplay slot={slot} court="C" />
-                </td>
-                <td data-label="休憩チーム">{formatRestingTeams(slot)}</td>
+                <MatchNumberCell slotNumber={slot.slotNumber} />
+                {courts.map((court) => (
+                  <td data-label={formatCourtLabel(result, court)} key={court}>
+                    <CourtMatchDisplay slot={slot} court={court} />
+                  </td>
+                ))}
+                {shouldShowRestingTeams && (
+                  <td className="rest-cell" data-label="休憩チーム">
+                    <RestingTeamsCell slot={slot} />
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -351,8 +521,8 @@ function ScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
     return <OneCourtScheduleResultView result={result} onBack={onBack} />
   }
 
-  if (result.courtCount === 3) {
-    return <ThreeCourtScheduleResultView result={result} onBack={onBack} />
+  if (result.courtCount === 3 || result.courtCount === 4) {
+    return <MultiCourtScheduleResultView result={result} onBack={onBack} />
   }
 
   return <TwoCourtScheduleResultView result={result} onBack={onBack} />
@@ -368,6 +538,7 @@ function App() {
   }))
   const [scheduleResult, setScheduleResult] = useState<ScheduleGenerationResult | null>(null)
   const [formMessage, setFormMessage] = useState<string | null>(null)
+  const [isGenerating, setIsGenerating] = useState(false)
 
   const enteredTeamCount = useMemo(
     () => setup.teamNames.filter((teamName) => teamName.trim().length > 0).length,
@@ -438,36 +609,35 @@ function App() {
     })
   }
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-
-    if (setup.courtCount !== 1 && setup.courtCount !== 2 && setup.courtCount !== 3) {
-      setScheduleResult(null)
-      setFormMessage('現在1コート・2コート・3コート版を実装中です。4コートは今後対応予定です。')
-      return
-    }
-
+  const generateSchedule = (currentSetup: MatchSetup) => {
     try {
       let nextSchedule: ScheduleGenerationResult
 
-      if (setup.courtCount === 1) {
+      if (currentSetup.courtCount === 1) {
         nextSchedule = generateOneCourtSchedule({
-          courtCount: setup.courtCount,
-          roundCount: setup.roundCount,
-          teamNames: setup.teamNames,
+          courtCount: currentSetup.courtCount,
+          roundCount: currentSetup.roundCount,
+          teamNames: currentSetup.teamNames,
         })
-      } else if (setup.courtCount === 2) {
+      } else if (currentSetup.courtCount === 2) {
         nextSchedule = generateTwoCourtSchedule({
-          courtCount: setup.courtCount,
-          roundCount: setup.roundCount,
-          teamNames: setup.teamNames,
+          courtCount: currentSetup.courtCount,
+          roundCount: currentSetup.roundCount,
+          teamNames: currentSetup.teamNames,
+        })
+      } else if (currentSetup.courtCount === 3) {
+        nextSchedule = generateThreeCourtSchedule({
+          courtCount: currentSetup.courtCount,
+          roundCount: currentSetup.roundCount,
+          teamNames: currentSetup.teamNames,
+          courtVenues: createCourtVenueSettings(currentSetup.courtCount, currentSetup.courtVenues),
         })
       } else {
-        nextSchedule = generateThreeCourtSchedule({
-          courtCount: setup.courtCount,
-          roundCount: setup.roundCount,
-          teamNames: setup.teamNames,
-          courtVenues: createCourtVenueSettings(setup.courtVenues),
+        nextSchedule = generateFourCourtSchedule({
+          courtCount: currentSetup.courtCount,
+          roundCount: currentSetup.roundCount,
+          teamNames: currentSetup.teamNames,
+          courtVenues: createCourtVenueSettings(currentSetup.courtCount, currentSetup.courtVenues),
         })
       }
 
@@ -476,7 +646,24 @@ function App() {
     } catch (error) {
       setScheduleResult(null)
       setFormMessage(error instanceof Error ? error.message : '組み合わせを作成できませんでした。')
+    } finally {
+      setIsGenerating(false)
     }
+  }
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (isGenerating) {
+      return
+    }
+
+    const currentSetup = setup
+    setFormMessage(null)
+    setIsGenerating(true)
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => generateSchedule(currentSetup), 0)
+    })
   }
 
   const handleBackToForm = () => {
@@ -497,12 +684,16 @@ function App() {
           <p className="eyebrow">小・中・高校の練習試合に</p>
           <h1 id="page-title">練習試合 組み合わせ作成</h1>
           <p className="lead">ログインなしですぐ使えます。コート数、チーム数、周回数を入力して準備を始めます。</p>
+          <div className="alpha-note screen-only">
+            <span>α版</span>
+            <p>現在α版です。生成結果は利用前にご確認ください。</p>
+          </div>
         </section>
 
         {scheduleResult ? (
           <ScheduleResultView result={scheduleResult} onBack={handleBackToForm} />
         ) : (
-          <form className="setup-panel" onSubmit={handleSubmit}>
+          <form className="setup-panel" onSubmit={handleSubmit} aria-busy={isGenerating}>
             <section className="form-section" aria-labelledby="basic-settings-title">
               <div className="section-heading">
                 <div>
@@ -521,17 +712,19 @@ function App() {
                   <label className="field-label" htmlFor="court-count">
                     コート数
                   </label>
-                  <select
-                    id="court-count"
-                    value={setup.courtCount}
-                    onChange={handleCourtChange}
-                  >
-                    {COURT_OPTIONS.map((courtCount) => (
-                      <option key={courtCount} value={courtCount}>
-                        {courtCount}コート
-                      </option>
-                    ))}
-                  </select>
+                  <div className="field-control">
+                    <select
+                      id="court-count"
+                      value={setup.courtCount}
+                      onChange={handleCourtChange}
+                    >
+                      {COURT_OPTIONS.map((courtCount) => (
+                        <option key={courtCount} value={courtCount}>
+                          {courtCount}コート
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
 
                 <NumberSelector
@@ -559,11 +752,11 @@ function App() {
                 />
               </div>
 
-              {setup.courtCount === 3 && (
+              {(setup.courtCount === 3 || setup.courtCount === 4) && (
                 <div className="venue-settings" aria-labelledby="venue-settings-title">
                   <div className="venue-settings-heading">
                     <h3 id="venue-settings-title">会場設定</h3>
-                    <p>3面が同じ会場なら、このまま使えます。</p>
+                    <p>{setup.courtCount}面が同じ会場なら、このまま使えます。</p>
                   </div>
                   {shouldShowVenueMoveNote && (
                     <p className="venue-note">
@@ -571,7 +764,7 @@ function App() {
                     </p>
                   )}
                   <div className="venue-grid">
-                    {THREE_COURTS.map((court) => {
+                    {VENUE_CONFIGURABLE_COURTS.slice(0, setup.courtCount).map((court) => {
                       const selectId = 'venue-' + court
 
                       return (
@@ -630,12 +823,27 @@ function App() {
             </section>
 
             <div className="form-actions">
-              <button className="primary-button" type="submit">
-                組み合わせを作成
+              {isGenerating && (
+                <p className="loading-message" role="status" aria-live="polite">
+                  組み合わせを作成中です。
+                </p>
+              )}
+              <button className="primary-button" type="submit" disabled={isGenerating}>
+                {isGenerating && <span className="button-spinner" aria-hidden="true" />}
+                <span>{isGenerating ? '作成中…' : '組み合わせを作成'}</span>
               </button>
             </div>
           </form>
         )}
+        <footer className="app-footer screen-only">
+          <span>
+            ご意見・不具合報告：
+            <a href={X_PROFILE_URL} target="_blank" rel="noreferrer">@kumasansofttouch</a>
+          </span>
+          <a className="share-link" href={createXShareUrl()} target="_blank" rel="noreferrer">
+            Xで共有
+          </a>
+        </footer>
       </main>
     </div>
   )
