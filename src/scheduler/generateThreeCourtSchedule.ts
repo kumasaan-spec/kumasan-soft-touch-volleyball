@@ -16,6 +16,7 @@ const COMPLETION_SEARCH_LIMIT = 24
 const TERMINAL_CARD_SCORE_WEIGHT = 1
 const TERMINAL_CARD_SEARCH_LIMIT = 12
 const ALWAYS_ACTIVE_COURT_STATE_LIMIT = 4096
+const REST_LOCKED_RESCHEDULE_NODE_LIMIT = 120_000
 const THREE_COURTS = ['A', 'B', 'C'] as const
 const DEFAULT_VENUE_NAME = '会場1'
 
@@ -239,6 +240,15 @@ const scoreCardIntervalsForMatches = (
   return score + scoreCardRepeatGap(slotNumber - lastSlot, preferWideSpacing)
 }, 0)
 
+const hasImmediateCardRematch = (
+  selectedMatches: PendingMatch[],
+  lastCardSlots: Map<string, number>,
+  slotNumber: number,
+) =>
+  selectedMatches.some(
+    (match) => lastCardSlots.get(match.cardKey) === slotNumber - 1,
+  )
+
 const createTerminalSlotCandidateIndexes = (
   matches: PendingMatch[],
   matchCount: number,
@@ -292,6 +302,7 @@ const findBestTerminalCardScore = (
   lastCardSlots: Map<string, number>,
   slotNumber: number,
   matchCount: number,
+  forbidImmediateCardRematches: boolean,
   memo: Map<string, number | null>,
 ): number | null => {
   if (matches.length === 0) {
@@ -308,6 +319,14 @@ const findBestTerminalCardScore = (
 
   for (const indexes of candidateIndexes) {
     const selectedMatches = indexes.map((index) => matches[index])
+
+    if (
+      forbidImmediateCardRematches &&
+      hasImmediateCardRematch(selectedMatches, lastCardSlots, slotNumber)
+    ) {
+      continue
+    }
+
     const selectedIndexSet = new Set(indexes)
     const remainingMatches = matches.filter((_, index) => !selectedIndexSet.has(index))
     const nextLastCardSlots = new Map(lastCardSlots)
@@ -321,6 +340,7 @@ const findBestTerminalCardScore = (
       nextLastCardSlots,
       slotNumber + 1,
       matchCount,
+      forbidImmediateCardRematches,
       memo,
     )
 
@@ -350,6 +370,7 @@ const scoreTerminalCardCompletionAfterSelection = (
   lastCardSlots: Map<string, number>,
   slotNumber: number,
   matchCount: number,
+  forbidImmediateCardRematches: boolean,
 ) => {
   const remainingMatchCount = pendingMatches.length - selectedIndexes.length
   if (remainingMatchCount === 0 || remainingMatchCount % matchCount !== 0) {
@@ -374,6 +395,7 @@ const scoreTerminalCardCompletionAfterSelection = (
     nextLastCardSlots,
     slotNumber + 1,
     matchCount,
+    forbidImmediateCardRematches,
     new Map(),
   )
 }
@@ -507,13 +529,13 @@ const scoreRestPlan = (
     }
 
     if (teamState.currentPlayStreak >= 5) {
-      score -= 8_000
+      score -= 72_000
     } else if (teamState.currentPlayStreak === 4) {
-      score -= 5_200
+      score -= 54_000
     } else if (teamState.currentPlayStreak === 3) {
-      score -= 2_600
+      score -= 36_000
     } else if (teamState.currentPlayStreak === 2) {
-      score -= 600
+      score -= 1_200
     }
   }
 
@@ -531,13 +553,13 @@ const scorePlayStreaks = (
     const nextPlayStreak = teamStates[teamIndex].currentPlayStreak + 1
 
     if (nextPlayStreak >= 6) {
-      score += 22_000 + (nextPlayStreak - 6) * 6_000
+      score += 190_000 + (nextPlayStreak - 6) * 48_000
     } else if (nextPlayStreak === 5) {
-      score += 12_000
+      score += 132_000
     } else if (nextPlayStreak === 4) {
-      score += 6_000
+      score += 80_000
     } else if (nextPlayStreak === 3) {
-      score += 1_000
+      score += 1_200
     } else if (nextPlayStreak === 2) {
       score += 50
     }
@@ -727,11 +749,19 @@ const evaluateCombination = (
   slotNumber: number,
   venueLookup: Map<ThreeCourtId, string>,
   previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
+  forbidImmediateCardRematches: boolean,
   requiredFullMatchCount: number | null,
 ) => {
   const matches = indexes.map((index) => pendingMatches[index])
 
   if (hasAnyTeamOverlap(matches)) {
+    return null
+  }
+
+  if (
+    forbidImmediateCardRematches &&
+    hasImmediateCardRematch(matches, lastCardSlots, slotNumber)
+  ) {
     return null
   }
 
@@ -743,6 +773,7 @@ const evaluateCombination = (
       lastCardSlots,
       slotNumber,
       requiredFullMatchCount,
+      forbidImmediateCardRematches,
     )
 
   if (terminalCardScore === null) {
@@ -772,6 +803,7 @@ const findBestPlanForMatchCount = (
   slotNumber: number,
   venueLookup: Map<ThreeCourtId, string>,
   previousCourtTeamIndexes: Map<ThreeCourtId, CourtTeamIndexes | null>,
+  forbidImmediateCardRematches: boolean,
   matchCount: number,
   windowSize: number,
   requiredFullMatchCount: number | null,
@@ -788,6 +820,7 @@ const findBestPlanForMatchCount = (
         slotNumber,
         venueLookup,
         previousCourtTeamIndexes,
+        forbidImmediateCardRematches,
         requiredFullMatchCount,
       )
 
@@ -810,6 +843,7 @@ const findBestPlanForMatchCount = (
           slotNumber,
           venueLookup,
           previousCourtTeamIndexes,
+          forbidImmediateCardRematches,
           requiredFullMatchCount,
         )
 
@@ -837,6 +871,7 @@ const findBestPlanForMatchCount = (
           slotNumber,
           venueLookup,
           previousCourtTeamIndexes,
+          forbidImmediateCardRematches,
           requiredFullMatchCount,
         )
 
@@ -865,38 +900,42 @@ const chooseMatchesForSlot = (
   )
 
   for (let matchCount = targetMatchCount; matchCount >= 1; matchCount -= 1) {
-    const candidateWindowSize = Math.min(CANDIDATE_WINDOW_SIZE, pendingMatches.length)
-    const candidatePlan = findBestPlanForMatchCount(
-      pendingMatches,
-      teamStates,
-      lastCardSlots,
-      slotNumber,
-      venueLookup,
-      previousCourtTeamIndexes,
-      matchCount,
-      candidateWindowSize,
-      matchCount === targetMatchCount ? targetMatchCount : null,
-    )
+    for (const forbidImmediateCardRematches of [true, false]) {
+      const candidateWindowSize = Math.min(CANDIDATE_WINDOW_SIZE, pendingMatches.length)
+      const candidatePlan = findBestPlanForMatchCount(
+        pendingMatches,
+        teamStates,
+        lastCardSlots,
+        slotNumber,
+        venueLookup,
+        previousCourtTeamIndexes,
+        forbidImmediateCardRematches,
+        matchCount,
+        candidateWindowSize,
+        matchCount === targetMatchCount ? targetMatchCount : null,
+      )
 
-    if (candidatePlan !== null) {
-      return candidatePlan
-    }
+      if (candidatePlan !== null) {
+        return candidatePlan
+      }
 
-    const fallbackWindowSize = Math.min(FALLBACK_WINDOW_SIZE, pendingMatches.length)
-    const fallbackPlan = findBestPlanForMatchCount(
-      pendingMatches,
-      teamStates,
-      lastCardSlots,
-      slotNumber,
-      venueLookup,
-      previousCourtTeamIndexes,
-      matchCount,
-      fallbackWindowSize,
-      matchCount === targetMatchCount ? targetMatchCount : null,
-    )
+      const fallbackWindowSize = Math.min(FALLBACK_WINDOW_SIZE, pendingMatches.length)
+      const fallbackPlan = findBestPlanForMatchCount(
+        pendingMatches,
+        teamStates,
+        lastCardSlots,
+        slotNumber,
+        venueLookup,
+        previousCourtTeamIndexes,
+        forbidImmediateCardRematches,
+        matchCount,
+        fallbackWindowSize,
+        matchCount === targetMatchCount ? targetMatchCount : null,
+      )
 
-    if (fallbackPlan !== null) {
-      return fallbackPlan
+      if (fallbackPlan !== null) {
+        return fallbackPlan
+      }
     }
   }
 
@@ -1579,6 +1618,580 @@ const keepsCriticalQuality = (candidate: ScheduleQuality, baseline: ScheduleQual
   candidate.repeatsWithin2Slots <= baseline.repeatsWithin2Slots &&
   candidate.totalVenueRoundTrips <= baseline.totalVenueRoundTrips
 
+type RestLockedCourtPlan = {
+  court: ThreeCourtId
+  teamIndexes: CourtTeamIndexes
+  cardKey: string
+}
+
+type RestLockedRescheduleState = {
+  remainingCardCounts: number[]
+  lastCardSlots: number[]
+  lastCourts: number[]
+  lastVenues: number[]
+  previousVenues: number[]
+  teamCourtMoves: number[]
+  teamVenueMoves: number[]
+  teamVenueRoundTrips: number[]
+  lastCourtTeamIndexes: Array<CourtTeamIndexes | null>
+  repeatsWithin2Slots: number
+  minRepeatGap: number
+  oneTeamChangeCount: number
+  twoTeamChangeCount: number
+  sameCourtCardRepeatCount: number
+  orderScore: number
+  courtPlanSlots: RestLockedCourtPlan[][]
+}
+
+const createTeamPairIndexes = (teamCount: number): CourtTeamIndexes[] => {
+  const pairIndexes: CourtTeamIndexes[] = []
+
+  for (let firstIndex = 0; firstIndex < teamCount - 1; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < teamCount; secondIndex += 1) {
+      pairIndexes.push([firstIndex, secondIndex])
+    }
+  }
+
+  return pairIndexes
+}
+
+const createActiveTeamIndexesBySlot = (slots: ScheduleSlot[], teams: Team[]) => {
+  const teamIndexById = new Map(teams.map((team, teamIndex) => [team.id, teamIndex]))
+
+  return slots.map((slot) => {
+    const restingTeamIndexes = new Set(
+      slot.restingTeams
+        .map((team) => teamIndexById.get(team.id))
+        .filter((teamIndex): teamIndex is number => teamIndex !== undefined),
+    )
+
+    return teams
+      .map((_, teamIndex) => teamIndex)
+      .filter((teamIndex) => !restingTeamIndexes.has(teamIndex))
+  })
+}
+
+const createPerfectMatchings = (activeTeamIndexes: number[]): CourtTeamIndexes[][] => {
+  if (activeTeamIndexes.length === 0) {
+    return [[]]
+  }
+
+  const firstTeamIndex = activeTeamIndexes[0]
+  if (firstTeamIndex === undefined) {
+    return [[]]
+  }
+
+  return activeTeamIndexes.slice(1).flatMap((secondTeamIndex) => {
+    const remainingTeamIndexes = activeTeamIndexes.filter(
+      (teamIndex) => teamIndex !== firstTeamIndex && teamIndex !== secondTeamIndex,
+    )
+
+    return createPerfectMatchings(remainingTeamIndexes).map((matchings) => [
+      [firstTeamIndex, secondTeamIndex] as const,
+      ...matchings,
+    ])
+  })
+}
+
+const createRestLockedCourtPlanOptions = (
+  teamPairs: CourtTeamIndexes[],
+  availableCourts: readonly ThreeCourtId[] = THREE_COURTS,
+): RestLockedCourtPlan[][] => {
+  if (teamPairs.length === 0) {
+    return [[]]
+  }
+
+  const teamPair = teamPairs[0]
+  if (teamPair === undefined) {
+    return [[]]
+  }
+
+  return availableCourts.flatMap((court) =>
+    createRestLockedCourtPlanOptions(
+      teamPairs.slice(1),
+      availableCourts.filter((availableCourt) => availableCourt !== court),
+    ).map((courtPlans) => [
+      {
+        court,
+        teamIndexes: teamPair,
+        cardKey: createCardKey(teamPair[0], teamPair[1]),
+      },
+      ...courtPlans,
+    ]),
+  )
+}
+
+const createRestLockedSlotOptions = (activeTeamIndexesBySlot: number[][]) =>
+  activeTeamIndexesBySlot.map((activeTeamIndexes) =>
+    createPerfectMatchings(activeTeamIndexes).flatMap((teamPairs) =>
+      createRestLockedCourtPlanOptions(teamPairs),
+    ),
+  )
+
+const createFutureCardAvailabilityCounts = (
+  activeTeamIndexesBySlot: number[][],
+  teamPairs: CourtTeamIndexes[],
+) => {
+  const futureCounts = Array.from(
+    { length: activeTeamIndexesBySlot.length + 1 },
+    () => Array.from({ length: teamPairs.length }, () => 0),
+  )
+
+  for (let slotIndex = activeTeamIndexesBySlot.length - 1; slotIndex >= 0; slotIndex -= 1) {
+    futureCounts[slotIndex] = [...futureCounts[slotIndex + 1]]
+    const activeTeamIndexes = new Set(activeTeamIndexesBySlot[slotIndex])
+
+    teamPairs.forEach(([teamAIndex, teamBIndex], cardIndex) => {
+      if (activeTeamIndexes.has(teamAIndex) && activeTeamIndexes.has(teamBIndex)) {
+        futureCounts[slotIndex][cardIndex] += 1
+      }
+    })
+  }
+
+  return futureCounts
+}
+
+const canPlaceRemainingCards = (
+  remainingCardCounts: number[],
+  futureCardAvailabilityCounts: number[][],
+  nextSlotIndex: number,
+) =>
+  remainingCardCounts.every(
+    (remainingCount, cardIndex) =>
+      remainingCount >= 0 && remainingCount <= futureCardAvailabilityCounts[nextSlotIndex][cardIndex],
+  )
+
+const getRestLockedStateSortValues = (state: RestLockedRescheduleState) => [
+  sumValues(state.teamVenueRoundTrips),
+  maxValue(state.teamVenueRoundTrips),
+  state.sameCourtCardRepeatCount,
+  state.repeatsWithin2Slots,
+  state.minRepeatGap === Number.POSITIVE_INFINITY ? -99 : -state.minRepeatGap,
+  maxValue(state.teamVenueMoves),
+  sumValues(state.teamVenueMoves),
+  calculateSpread(state.teamVenueMoves),
+  state.twoTeamChangeCount,
+  -state.oneTeamChangeCount,
+  maxValue(state.teamCourtMoves),
+  sumValues(state.teamCourtMoves),
+  calculateSpread(state.teamCourtMoves),
+  state.orderScore,
+]
+
+const compareRestLockedStates = (
+  first: RestLockedRescheduleState,
+  second: RestLockedRescheduleState,
+) => {
+  const firstValues = getRestLockedStateSortValues(first)
+  const secondValues = getRestLockedStateSortValues(second)
+
+  for (let index = 0; index < firstValues.length; index += 1) {
+    const difference = firstValues[index] - secondValues[index]
+
+    if (difference !== 0) {
+      return difference
+    }
+  }
+
+  return 0
+}
+
+const createRestLockedMemoKey = (slotIndex: number, state: RestLockedRescheduleState) =>
+  [
+    slotIndex,
+    state.remainingCardCounts.join(','),
+    state.lastCardSlots.join(','),
+    state.lastVenues.join(','),
+    state.previousVenues.join(','),
+    state.lastCourtTeamIndexes
+      .map((teamIndexes) => teamIndexes?.join('-') ?? 'empty')
+      .join(','),
+  ].join('|')
+
+const createNextRestLockedState = (
+  state: RestLockedRescheduleState,
+  courtPlans: RestLockedCourtPlan[],
+  slotIndex: number,
+  cardIndexByKey: Map<string, number>,
+  futureCardAvailabilityCounts: number[][],
+  venueCodeLookup: Map<ThreeCourtId, number>,
+  forbidVenueRoundTrips: boolean,
+) => {
+  const slotNumber = slotIndex + 1
+  const nextRemainingCardCounts = [...state.remainingCardCounts]
+  const nextLastCardSlots = [...state.lastCardSlots]
+  const nextLastCourts = [...state.lastCourts]
+  const nextLastVenues = [...state.lastVenues]
+  const nextPreviousVenues = [...state.previousVenues]
+  const nextTeamCourtMoves = [...state.teamCourtMoves]
+  const nextTeamVenueMoves = [...state.teamVenueMoves]
+  const nextTeamVenueRoundTrips = [...state.teamVenueRoundTrips]
+  const nextLastCourtTeamIndexes: Array<CourtTeamIndexes | null> = THREE_COURTS.map(() => null)
+  let repeatsWithin2Slots = state.repeatsWithin2Slots
+  let minRepeatGap = state.minRepeatGap
+  let oneTeamChangeCount = state.oneTeamChangeCount
+  let twoTeamChangeCount = state.twoTeamChangeCount
+  let sameCourtCardRepeatCount = state.sameCourtCardRepeatCount
+  let orderScore = state.orderScore
+
+  for (const [planIndex, courtPlan] of courtPlans.entries()) {
+    const cardIndex = cardIndexByKey.get(courtPlan.cardKey)
+
+    if (cardIndex === undefined || nextRemainingCardCounts[cardIndex] <= 0) {
+      return null
+    }
+
+    if (slotNumber > 1 && nextLastCardSlots[cardIndex] === slotNumber - 1) {
+      return null
+    }
+
+    const lastCardSlot = nextLastCardSlots[cardIndex]
+    if (lastCardSlot > 0) {
+      const gap = slotNumber - lastCardSlot
+      minRepeatGap = Math.min(minRepeatGap, gap)
+
+      if (gap <= 2) {
+        repeatsWithin2Slots += 1
+      }
+    }
+
+    nextRemainingCardCounts[cardIndex] -= 1
+    nextLastCardSlots[cardIndex] = slotNumber
+
+    const courtCode = getCourtCode(courtPlan.court)
+    const courtIndex = courtCode - 1
+    const venueCode = venueCodeLookup.get(courtPlan.court) ?? 1
+    const previousCourtTeamIndexes = state.lastCourtTeamIndexes[courtIndex]
+
+    if (previousCourtTeamIndexes !== null) {
+      const sharedTeamCount = countSharedCourtTeams(
+        previousCourtTeamIndexes,
+        courtPlan.teamIndexes,
+      )
+
+      if (sharedTeamCount === 2) {
+        sameCourtCardRepeatCount += 1
+      } else if (sharedTeamCount === 1) {
+        oneTeamChangeCount += 1
+      } else {
+        twoTeamChangeCount += 1
+      }
+    }
+
+    nextLastCourtTeamIndexes[courtIndex] = courtPlan.teamIndexes
+
+    for (const teamIndex of courtPlan.teamIndexes) {
+      const lastCourt = nextLastCourts[teamIndex]
+      const lastVenue = nextLastVenues[teamIndex]
+      const previousVenue = nextPreviousVenues[teamIndex]
+
+      if (lastCourt !== 0 && lastCourt !== courtCode) {
+        nextTeamCourtMoves[teamIndex] += 1
+      }
+
+      if (lastVenue !== 0 && lastVenue !== venueCode) {
+        if (previousVenue === venueCode) {
+          if (forbidVenueRoundTrips) {
+            return null
+          }
+
+          nextTeamVenueRoundTrips[teamIndex] += 1
+        }
+
+        nextTeamVenueMoves[teamIndex] += 1
+      }
+
+      nextPreviousVenues[teamIndex] = lastVenue
+      nextLastCourts[teamIndex] = courtCode
+      nextLastVenues[teamIndex] = venueCode
+    }
+
+    orderScore += getCourtCode(courtPlan.court) * (planIndex + 1) * 0.001
+  }
+
+  if (
+    !canPlaceRemainingCards(
+      nextRemainingCardCounts,
+      futureCardAvailabilityCounts,
+      slotIndex + 1,
+    )
+  ) {
+    return null
+  }
+
+  return {
+    remainingCardCounts: nextRemainingCardCounts,
+    lastCardSlots: nextLastCardSlots,
+    lastCourts: nextLastCourts,
+    lastVenues: nextLastVenues,
+    previousVenues: nextPreviousVenues,
+    teamCourtMoves: nextTeamCourtMoves,
+    teamVenueMoves: nextTeamVenueMoves,
+    teamVenueRoundTrips: nextTeamVenueRoundTrips,
+    lastCourtTeamIndexes: nextLastCourtTeamIndexes,
+    repeatsWithin2Slots,
+    minRepeatGap,
+    oneTeamChangeCount,
+    twoTeamChangeCount,
+    sameCourtCardRepeatCount,
+    orderScore,
+    courtPlanSlots: [...state.courtPlanSlots, courtPlans],
+  }
+}
+
+const createRestLockedOptionScore = (
+  state: RestLockedRescheduleState,
+  courtPlans: RestLockedCourtPlan[],
+  slotIndex: number,
+  cardIndexByKey: Map<string, number>,
+  venueCodeLookup: Map<ThreeCourtId, number>,
+) => {
+  const slotNumber = slotIndex + 1
+  let score = 0
+
+  for (const courtPlan of courtPlans) {
+    const cardIndex = cardIndexByKey.get(courtPlan.cardKey)
+    const lastCardSlot = cardIndex === undefined ? 0 : state.lastCardSlots[cardIndex]
+
+    if (lastCardSlot > 0) {
+      const gap = slotNumber - lastCardSlot
+
+      if (gap === 2) {
+        score += 10_000
+      } else if (gap === 3) {
+        score += 1_000
+      } else if (gap <= 7) {
+        score += (8 - gap) * 20
+      }
+    }
+
+    const courtCode = getCourtCode(courtPlan.court)
+    const courtIndex = courtCode - 1
+    const previousCourtTeamIndexes = state.lastCourtTeamIndexes[courtIndex]
+
+    if (previousCourtTeamIndexes !== null) {
+      const sharedTeamCount = countSharedCourtTeams(
+        previousCourtTeamIndexes,
+        courtPlan.teamIndexes,
+      )
+
+      if (sharedTeamCount === 2) {
+        score += 100_000
+      } else if (sharedTeamCount === 1) {
+        score -= 20
+      } else {
+        score += 80
+      }
+    }
+
+    const venueCode = venueCodeLookup.get(courtPlan.court) ?? 1
+
+    for (const teamIndex of courtPlan.teamIndexes) {
+      if (state.lastVenues[teamIndex] !== 0 && state.lastVenues[teamIndex] !== venueCode) {
+        score += 300
+      }
+
+      if (state.lastCourts[teamIndex] !== 0 && state.lastCourts[teamIndex] !== courtCode) {
+        score += 20
+      }
+    }
+  }
+
+  return score
+}
+
+const findRestLockedNoImmediateCourtPlanSlots = (
+  slots: ScheduleSlot[],
+  teams: Team[],
+  roundCount: number,
+  venueLookup: Map<ThreeCourtId, string>,
+  forbidVenueRoundTrips: boolean,
+) => {
+  if (
+    slots.length > 30 ||
+    teams.length > 8 ||
+    slots.some((slot) => slot.courts.some((assignment) => assignment.match === null))
+  ) {
+    return null
+  }
+
+  const activeTeamIndexesBySlot = createActiveTeamIndexesBySlot(slots, teams)
+
+  if (
+    activeTeamIndexesBySlot.some(
+      (activeTeamIndexes) => activeTeamIndexes.length !== THREE_COURTS.length * 2,
+    )
+  ) {
+    return null
+  }
+
+  const teamPairs = createTeamPairIndexes(teams.length)
+  const cardIndexByKey = new Map(
+    teamPairs.map((teamPair, cardIndex) => [createCardKey(teamPair[0], teamPair[1]), cardIndex]),
+  )
+  const futureCardAvailabilityCounts = createFutureCardAvailabilityCounts(
+    activeTeamIndexesBySlot,
+    teamPairs,
+  )
+  const slotOptions = createRestLockedSlotOptions(activeTeamIndexesBySlot)
+  const venueCodeLookup = createVenueCodeLookup(venueLookup)
+  let searchNodeCount = 0
+  const failedStateKeys = new Set<string>()
+  const initialState: RestLockedRescheduleState = {
+    remainingCardCounts: Array.from({ length: teamPairs.length }, () => roundCount),
+    lastCardSlots: Array.from({ length: teamPairs.length }, () => 0),
+    lastCourts: Array.from({ length: teams.length }, () => 0),
+    lastVenues: Array.from({ length: teams.length }, () => 0),
+    previousVenues: Array.from({ length: teams.length }, () => 0),
+    teamCourtMoves: Array.from({ length: teams.length }, () => 0),
+    teamVenueMoves: Array.from({ length: teams.length }, () => 0),
+    teamVenueRoundTrips: Array.from({ length: teams.length }, () => 0),
+    lastCourtTeamIndexes: THREE_COURTS.map(() => null),
+    repeatsWithin2Slots: 0,
+    minRepeatGap: Number.POSITIVE_INFINITY,
+    oneTeamChangeCount: 0,
+    twoTeamChangeCount: 0,
+    sameCourtCardRepeatCount: 0,
+    orderScore: 0,
+    courtPlanSlots: [],
+  }
+
+  const search = (slotIndex: number, state: RestLockedRescheduleState): RestLockedCourtPlan[][] | null => {
+    searchNodeCount += 1
+
+    if (searchNodeCount > REST_LOCKED_RESCHEDULE_NODE_LIMIT) {
+      return null
+    }
+
+    if (slotIndex === slots.length) {
+      return state.remainingCardCounts.every((remainingCount) => remainingCount === 0)
+        ? state.courtPlanSlots
+        : null
+    }
+
+    const memoKey = createRestLockedMemoKey(slotIndex, state)
+    if (failedStateKeys.has(memoKey)) {
+      return null
+    }
+
+    const nextStates = slotOptions[slotIndex]
+      .map((courtPlans) => ({
+        courtPlans,
+        state: createNextRestLockedState(
+          state,
+          courtPlans,
+          slotIndex,
+          cardIndexByKey,
+          futureCardAvailabilityCounts,
+          venueCodeLookup,
+          forbidVenueRoundTrips,
+        ),
+        optionScore: createRestLockedOptionScore(
+          state,
+          courtPlans,
+          slotIndex,
+          cardIndexByKey,
+          venueCodeLookup,
+        ),
+      }))
+      .filter(
+        (candidate): candidate is {
+          courtPlans: RestLockedCourtPlan[]
+          state: RestLockedRescheduleState
+          optionScore: number
+        } => candidate.state !== null,
+      )
+      .sort((first, second) =>
+        first.optionScore - second.optionScore || compareRestLockedStates(first.state, second.state),
+      )
+
+    for (const candidate of nextStates) {
+      const result = search(slotIndex + 1, candidate.state)
+
+      if (result !== null) {
+        return result
+      }
+    }
+
+    failedStateKeys.add(memoKey)
+    return null
+  }
+
+  return search(0, initialState)
+}
+
+const buildRestLockedScheduleSlots = (
+  sourceSlots: ScheduleSlot[],
+  teams: Team[],
+  courtPlanSlots: RestLockedCourtPlan[][],
+): ScheduleSlot[] =>
+  sourceSlots.map((sourceSlot, slotIndex) => {
+    const courts = THREE_COURTS.map((court) => {
+      const courtPlan = courtPlanSlots[slotIndex]?.find((plan) => plan.court === court)
+
+      if (courtPlan === undefined) {
+        return createEmptyAssignment(court)
+      }
+
+      return {
+        court,
+        match: {
+          id: `rescheduled-${sourceSlot.slotNumber}-${court}`,
+          teamA: teams[courtPlan.teamIndexes[0]],
+          teamB: teams[courtPlan.teamIndexes[1]],
+          cardKey: courtPlan.cardKey,
+        },
+      }
+    })
+    const slot = {
+      slotNumber: sourceSlot.slotNumber,
+      courts,
+      restingTeams: sourceSlot.restingTeams,
+    }
+
+    return {
+      ...slot,
+      restingTeams: rebuildRestingTeams(slot, teams),
+    }
+  })
+
+const rebalanceImmediateCardRematches = (
+  slots: ScheduleSlot[],
+  teams: Team[],
+  roundCount: number,
+  venueLookup: Map<ThreeCourtId, string>,
+) => {
+  const baselineQuality = calculateScheduleQuality(slots, teams, venueLookup)
+
+  if (baselineQuality.sameCardConsecutiveCount === 0) {
+    return slots
+  }
+
+  const courtPlanSlots = findRestLockedNoImmediateCourtPlanSlots(
+    slots,
+    teams,
+    roundCount,
+    venueLookup,
+    baselineQuality.totalVenueRoundTrips === 0,
+  )
+
+  if (courtPlanSlots === null) {
+    return slots
+  }
+
+  const candidateSlots = buildRestLockedScheduleSlots(slots, teams, courtPlanSlots)
+  const candidateQuality = calculateScheduleQuality(candidateSlots, teams, venueLookup)
+
+  if (
+    candidateQuality.sameCardConsecutiveCount < baselineQuality.sameCardConsecutiveCount &&
+    keepsCriticalQuality(candidateQuality, baselineQuality)
+  ) {
+    return candidateSlots
+  }
+
+  return slots
+}
+
 const optimizeScheduleCardSpacing = (
   slots: ScheduleSlot[],
   teams: Team[],
@@ -1731,13 +2344,20 @@ export const generateThreeCourtSchedule = ({
   }
 
   const optimizedSlots = optimizeScheduleCardSpacing(slots, teams, venueLookup)
+  const rebalancedSlots = rebalanceImmediateCardRematches(
+    optimizedSlots,
+    teams,
+    roundCount,
+    venueLookup,
+  )
+  const finalSlots = optimizeScheduleCardSpacing(rebalancedSlots, teams, venueLookup)
 
   return {
     courtCount: 3,
     roundCount,
     teams,
-    slots: optimizedSlots,
-    totalMatches: optimizedSlots.reduce(
+    slots: finalSlots,
+    totalMatches: finalSlots.reduce(
       (total, slot) => total + slot.courts.filter((assignment) => assignment.match !== null).length,
       0,
     ),
