@@ -249,7 +249,7 @@ h3 {
 
 .venue-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 14px 16px;
 }
 
@@ -523,7 +523,7 @@ button:focus-visible {
     overflow-wrap: anywhere;
   }
 
-  .three-court-schedule-table td {
+  .multi-court-schedule-table td {
     grid-template-columns: minmax(118px, 42%) minmax(0, 1fr);
   }
 

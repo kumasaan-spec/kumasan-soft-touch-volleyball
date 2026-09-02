@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { generateOneCourtSchedule } from '../../src/scheduler/generateOneCourtSchedule'
+import { generateFourCourtSchedule } from '../../src/scheduler/generateFourCourtSchedule'
 import { generateThreeCourtSchedule } from '../../src/scheduler/generateThreeCourtSchedule'
 import { generateTwoCourtSchedule } from '../../src/scheduler/generateTwoCourtSchedule'
 import type {
@@ -40,7 +41,7 @@ type Metrics = {
 
 type CaseDefinition = {
   name: string
-  courtCount: 1 | 2 | 3
+  courtCount: 1 | 2 | 3 | 4
   teamCount: number
   roundCount: number
   generator: Generator
@@ -363,6 +364,20 @@ const twoVenueThreeCourts: CourtVenueSetting[] = [
   { court: 'C', venueName: '会場2' },
 ]
 
+const oneVenueFourCourts: CourtVenueSetting[] = [
+  { court: 'A', venueName: '会場1' },
+  { court: 'B', venueName: '会場1' },
+  { court: 'C', venueName: '会場1' },
+  { court: 'D', venueName: '会場1' },
+]
+
+const twoVenueFourCourts: CourtVenueSetting[] = [
+  { court: 'A', venueName: '会場1' },
+  { court: 'B', venueName: '会場1' },
+  { court: 'C', venueName: '会場2' },
+  { court: 'D', venueName: '会場2' },
+]
+
 const cases: CaseDefinition[] = [
   {
     name: '1コート / 3チーム / 3周',
@@ -454,6 +469,111 @@ const cases: CaseDefinition[] = [
     roundCount: 3,
     generator: generateThreeCourtSchedule,
     courtVenues: oneVenueThreeCourts,
+  },
+
+  {
+    name: '4コート / 8チーム / 1周 / 全会場1',
+    courtCount: 4,
+    teamCount: 8,
+    roundCount: 1,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 8チーム / 2周 / 全会場1',
+    courtCount: 4,
+    teamCount: 8,
+    roundCount: 2,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 8チーム / 3周 / 全会場1',
+    courtCount: 4,
+    teamCount: 8,
+    roundCount: 3,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 8チーム / 3周 / 2会場',
+    courtCount: 4,
+    teamCount: 8,
+    roundCount: 3,
+    generator: generateFourCourtSchedule,
+    courtVenues: twoVenueFourCourts,
+  },
+  {
+    name: '4コート / 9チーム / 1周 / 全会場1',
+    courtCount: 4,
+    teamCount: 9,
+    roundCount: 1,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 9チーム / 2周 / 全会場1',
+    courtCount: 4,
+    teamCount: 9,
+    roundCount: 2,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 9チーム / 3周 / 全会場1',
+    courtCount: 4,
+    teamCount: 9,
+    roundCount: 3,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 10チーム / 1周 / 全会場1',
+    courtCount: 4,
+    teamCount: 10,
+    roundCount: 1,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 10チーム / 2周 / 全会場1',
+    courtCount: 4,
+    teamCount: 10,
+    roundCount: 2,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 10チーム / 3周 / 全会場1',
+    courtCount: 4,
+    teamCount: 10,
+    roundCount: 3,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 10チーム / 3周 / 2会場',
+    courtCount: 4,
+    teamCount: 10,
+    roundCount: 3,
+    generator: generateFourCourtSchedule,
+    courtVenues: twoVenueFourCourts,
+  },
+  {
+    name: '4コート / 11チーム / 3周 / 全会場1',
+    courtCount: 4,
+    teamCount: 11,
+    roundCount: 3,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
+  },
+  {
+    name: '4コート / 12チーム / 3周 / 全会場1',
+    courtCount: 4,
+    teamCount: 12,
+    roundCount: 3,
+    generator: generateFourCourtSchedule,
+    courtVenues: oneVenueFourCourts,
   },
   {
     name: '3コート / 8チーム / 3周 / 2会場',

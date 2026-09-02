@@ -1,6 +1,7 @@
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import './App.css'
 import { generateOneCourtSchedule } from './scheduler/generateOneCourtSchedule'
+import { generateFourCourtSchedule } from './scheduler/generateFourCourtSchedule'
 import { generateThreeCourtSchedule } from './scheduler/generateThreeCourtSchedule'
 import { generateTwoCourtSchedule } from './scheduler/generateTwoCourtSchedule'
 import { isAlwaysActiveTeamCount } from './scheduler/teamUtils'
@@ -14,7 +15,7 @@ import type {
 
 const COURT_OPTIONS = [1, 2, 3, 4] as const
 const ACTIVE_COURTS = ['A', 'B', 'C', 'D'] as const
-const THREE_COURTS = ['A', 'B', 'C'] as const
+const VENUE_CONFIGURABLE_COURTS = ['A', 'B', 'C', 'D'] as const
 const VENUE_OPTIONS = ['会場1', '会場2'] as const
 const DEFAULT_COURT_VENUES: Record<CourtId, string> = {
   A: '会場1',
@@ -106,9 +107,10 @@ const getCourtAssignment = (slot: ScheduleSlot, court: CourtId) =>
   slot.courts.find((assignment) => assignment.court === court)
 
 const createCourtVenueSettings = (
+  courtCount: CourtNumber,
   courtVenues: Record<CourtId, string>,
 ): CourtVenueSetting[] =>
-  THREE_COURTS.map((court) => ({
+  ACTIVE_COURTS.slice(0, courtCount).map((court) => ({
     court,
     venueName: courtVenues[court],
   }))
@@ -116,7 +118,7 @@ const createCourtVenueSettings = (
 const formatCourtLabel = (result: ScheduleGenerationResult, court: CourtId) => {
   const venueName = result.courtVenues?.find((setting) => setting.court === court)?.venueName
 
-  if (result.courtCount === 3 && venueName !== undefined) {
+  if ((result.courtCount === 3 || result.courtCount === 4) && venueName !== undefined) {
     return court + 'コート（' + venueName + '）'
   }
 
@@ -295,12 +297,14 @@ function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
   )
 }
 
-function ThreeCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function MultiCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+  const courts = ACTIVE_COURTS.slice(0, result.courtCount)
+
   return (
     <section className="result-panel" aria-labelledby="schedule-title">
       <div className="result-heading">
         <div>
-          <p className="result-kicker">3コート版</p>
+          <p className="result-kicker">{result.courtCount}コート版</p>
           <h2 id="schedule-title">生成結果</h2>
           <p>
             第1～第{result.slots.length}試合 / 全{result.totalMatches}対戦 /{' '}
@@ -313,13 +317,13 @@ function ThreeCourtScheduleResultView({ result, onBack }: ScheduleResultViewProp
       </div>
 
       <div className="schedule-table-wrap">
-        <table className="schedule-table three-court-schedule-table">
+        <table className="schedule-table multi-court-schedule-table">
           <thead>
             <tr>
               <th scope="col">試合順</th>
-              <th scope="col">{formatCourtLabel(result, 'A')}</th>
-              <th scope="col">{formatCourtLabel(result, 'B')}</th>
-              <th scope="col">{formatCourtLabel(result, 'C')}</th>
+              {courts.map((court) => (
+                <th scope="col" key={court}>{formatCourtLabel(result, court)}</th>
+              ))}
               <th scope="col">休憩チーム</th>
             </tr>
           </thead>
@@ -327,15 +331,11 @@ function ThreeCourtScheduleResultView({ result, onBack }: ScheduleResultViewProp
             {result.slots.map((slot) => (
               <tr key={slot.slotNumber}>
                 <th scope="row">第{slot.slotNumber}試合</th>
-                <td data-label={formatCourtLabel(result, 'A')}>
-                  <CourtMatchDisplay slot={slot} court="A" />
-                </td>
-                <td data-label={formatCourtLabel(result, 'B')}>
-                  <CourtMatchDisplay slot={slot} court="B" />
-                </td>
-                <td data-label={formatCourtLabel(result, 'C')}>
-                  <CourtMatchDisplay slot={slot} court="C" />
-                </td>
+                {courts.map((court) => (
+                  <td data-label={formatCourtLabel(result, court)} key={court}>
+                    <CourtMatchDisplay slot={slot} court={court} />
+                  </td>
+                ))}
                 <td data-label="休憩チーム">{formatRestingTeams(slot)}</td>
               </tr>
             ))}
@@ -351,8 +351,8 @@ function ScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
     return <OneCourtScheduleResultView result={result} onBack={onBack} />
   }
 
-  if (result.courtCount === 3) {
-    return <ThreeCourtScheduleResultView result={result} onBack={onBack} />
+  if (result.courtCount === 3 || result.courtCount === 4) {
+    return <MultiCourtScheduleResultView result={result} onBack={onBack} />
   }
 
   return <TwoCourtScheduleResultView result={result} onBack={onBack} />
@@ -441,12 +441,6 @@ function App() {
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (setup.courtCount !== 1 && setup.courtCount !== 2 && setup.courtCount !== 3) {
-      setScheduleResult(null)
-      setFormMessage('現在1コート・2コート・3コート版を実装中です。4コートは今後対応予定です。')
-      return
-    }
-
     try {
       let nextSchedule: ScheduleGenerationResult
 
@@ -462,12 +456,19 @@ function App() {
           roundCount: setup.roundCount,
           teamNames: setup.teamNames,
         })
-      } else {
+      } else if (setup.courtCount === 3) {
         nextSchedule = generateThreeCourtSchedule({
           courtCount: setup.courtCount,
           roundCount: setup.roundCount,
           teamNames: setup.teamNames,
-          courtVenues: createCourtVenueSettings(setup.courtVenues),
+          courtVenues: createCourtVenueSettings(setup.courtCount, setup.courtVenues),
+        })
+      } else {
+        nextSchedule = generateFourCourtSchedule({
+          courtCount: setup.courtCount,
+          roundCount: setup.roundCount,
+          teamNames: setup.teamNames,
+          courtVenues: createCourtVenueSettings(setup.courtCount, setup.courtVenues),
         })
       }
 
@@ -559,11 +560,11 @@ function App() {
                 />
               </div>
 
-              {setup.courtCount === 3 && (
+              {(setup.courtCount === 3 || setup.courtCount === 4) && (
                 <div className="venue-settings" aria-labelledby="venue-settings-title">
                   <div className="venue-settings-heading">
                     <h3 id="venue-settings-title">会場設定</h3>
-                    <p>3面が同じ会場なら、このまま使えます。</p>
+                    <p>{setup.courtCount}面が同じ会場なら、このまま使えます。</p>
                   </div>
                   {shouldShowVenueMoveNote && (
                     <p className="venue-note">
@@ -571,7 +572,7 @@ function App() {
                     </p>
                   )}
                   <div className="venue-grid">
-                    {THREE_COURTS.map((court) => {
+                    {VENUE_CONFIGURABLE_COURTS.slice(0, setup.courtCount).map((court) => {
                       const selectId = 'venue-' + court
 
                       return (
