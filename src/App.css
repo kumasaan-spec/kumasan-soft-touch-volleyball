@@ -789,8 +789,11 @@ button:focus-visible {
   }
 
   .schedule-table {
-    width: 100%;
+    width: calc(100% - 0.8mm);
+    margin-right: 0.8mm;
+    border: 1pt solid #111111;
     border-collapse: collapse;
+    box-sizing: border-box;
     table-layout: fixed;
     font-size: 9pt;
     line-height: 1.35;
@@ -848,8 +851,29 @@ button:focus-visible {
   .schedule-table th,
   .schedule-table td {
     padding: 2.2mm 1.6mm;
-    border: 0.8pt solid #333333;
+    border: 0.75pt solid #333333;
     vertical-align: top;
+  }
+
+  .schedule-table tr > :first-child {
+    border-left-color: #111111;
+    border-left-width: 1pt;
+  }
+
+  .schedule-table tr > :last-child {
+    border-right-color: #111111;
+    border-right-width: 1pt;
+  }
+
+  .schedule-table thead tr:first-child > th {
+    border-top-color: #111111;
+    border-top-width: 1pt;
+  }
+
+  .schedule-table tbody tr:last-child > th,
+  .schedule-table tbody tr:last-child > td {
+    border-bottom-color: #111111;
+    border-bottom-width: 1pt;
   }
 
   .schedule-table thead th {
