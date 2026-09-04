@@ -1,5 +1,6 @@
 import { useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
 import './App.css'
+import { exportScheduleToExcel } from './export/excelExport'
 import { generateOneCourtSchedule } from './scheduler/generateOneCourtSchedule'
 import { generateFourCourtSchedule } from './scheduler/generateFourCourtSchedule'
 import { generateThreeCourtSchedule } from './scheduler/generateThreeCourtSchedule'
@@ -17,7 +18,7 @@ const COURT_OPTIONS = [1, 2, 3, 4] as const
 const ACTIVE_COURTS = ['A', 'B', 'C', 'D'] as const
 const VENUE_CONFIGURABLE_COURTS = ['A', 'B', 'C', 'D'] as const
 const VENUE_OPTIONS = ['会場1', '会場2'] as const
-const X_PROFILE_URL = 'https://x.com/kumasansofttouch'
+const X_PROFILE_URL = 'https://x.com/kumasansofttouc'
 const X_SHARE_TEXT =
   'バレーボール練習試合の組み合わせ作成\n#バレーボール #練習試合 #組み合わせ作成 #スポ少 #小学生バレー'
 const DEFAULT_COURT_VENUES: Record<CourtId, string> = {
@@ -69,6 +70,9 @@ type NumberSelectorProps = {
 type ScheduleResultViewProps = {
   result: ScheduleGenerationResult
   onBack: () => void
+  onExportExcel: () => void
+  isExcelExporting: boolean
+  excelMessage: string | null
 }
 
 type CourtMatchDisplayProps = {
@@ -78,6 +82,8 @@ type CourtMatchDisplayProps = {
 
 type ResultActionsProps = {
   onBack: () => void
+  onExportExcel: () => void
+  isExcelExporting: boolean
 }
 
 type ScheduleTableColumnsProps = {
@@ -185,6 +191,11 @@ const createXShareUrl = () =>
   encodeURIComponent(X_SHARE_TEXT) +
   '&url=' +
   encodeURIComponent(window.location.href)
+
+const waitForNextFrame = () =>
+  new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve())
+  })
 
 function NumberSelector({
   id,
@@ -325,10 +336,22 @@ function PrintScheduleHeader({ result }: { result: ScheduleGenerationResult }) {
   )
 }
 
-function ResultActions({ onBack }: ResultActionsProps) {
+function ResultActions({
+  onBack,
+  onExportExcel,
+  isExcelExporting,
+}: ResultActionsProps) {
   return (
     <div className="result-actions screen-only">
-      <div className="output-actions" aria-label="出力操作">
+      <div className="output-actions" aria-label="出力操作" aria-busy={isExcelExporting}>
+        <button
+          className="excel-button"
+          type="button"
+          disabled={isExcelExporting}
+          onClick={onExportExcel}
+        >
+          {isExcelExporting ? 'Excel作成中…' : 'Excel出力'}
+        </button>
         <button className="print-button" type="button" onClick={printSchedule}>
           印刷する
         </button>
@@ -340,7 +363,13 @@ function ResultActions({ onBack }: ResultActionsProps) {
   )
 }
 
-function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function OneCourtScheduleResultView({
+  result,
+  onBack,
+  onExportExcel,
+  isExcelExporting,
+  excelMessage,
+}: ScheduleResultViewProps) {
   const shouldShowRestingTeams = hasAnyRestingTeams(result)
 
   return (
@@ -355,8 +384,18 @@ function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
             {result.teams.length}チーム / {result.roundCount}周
           </p>
         </div>
-        <ResultActions onBack={onBack} />
+        <ResultActions
+          isExcelExporting={isExcelExporting}
+          onBack={onBack}
+          onExportExcel={onExportExcel}
+        />
       </div>
+
+      {excelMessage && (
+        <p className="form-message result-message screen-only" role="alert">
+          {excelMessage}
+        </p>
+      )}
 
       <div className="schedule-table-wrap">
         <table className={getScheduleTableClassName(result.courtCount, shouldShowRestingTeams)}>
@@ -394,7 +433,13 @@ function OneCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
   )
 }
 
-function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function TwoCourtScheduleResultView({
+  result,
+  onBack,
+  onExportExcel,
+  isExcelExporting,
+  excelMessage,
+}: ScheduleResultViewProps) {
   const shouldShowRestingTeams = hasAnyRestingTeams(result)
 
   return (
@@ -409,8 +454,18 @@ function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
             {result.teams.length}チーム / {result.roundCount}周
           </p>
         </div>
-        <ResultActions onBack={onBack} />
+        <ResultActions
+          isExcelExporting={isExcelExporting}
+          onBack={onBack}
+          onExportExcel={onExportExcel}
+        />
       </div>
+
+      {excelMessage && (
+        <p className="form-message result-message screen-only" role="alert">
+          {excelMessage}
+        </p>
+      )}
 
       <div className="schedule-table-wrap">
         <table className={getScheduleTableClassName(result.courtCount, shouldShowRestingTeams)}>
@@ -452,7 +507,13 @@ function TwoCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps)
   )
 }
 
-function MultiCourtScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function MultiCourtScheduleResultView({
+  result,
+  onBack,
+  onExportExcel,
+  isExcelExporting,
+  excelMessage,
+}: ScheduleResultViewProps) {
   const courts = ACTIVE_COURTS.slice(0, result.courtCount)
   const shouldShowRestingTeams = hasAnyRestingTeams(result)
 
@@ -468,8 +529,18 @@ function MultiCourtScheduleResultView({ result, onBack }: ScheduleResultViewProp
             {result.teams.length}チーム / {result.roundCount}周
           </p>
         </div>
-        <ResultActions onBack={onBack} />
+        <ResultActions
+          isExcelExporting={isExcelExporting}
+          onBack={onBack}
+          onExportExcel={onExportExcel}
+        />
       </div>
+
+      {excelMessage && (
+        <p className="form-message result-message screen-only" role="alert">
+          {excelMessage}
+        </p>
+      )}
 
       <div className="schedule-table-wrap">
         <table
@@ -516,16 +587,30 @@ function MultiCourtScheduleResultView({ result, onBack }: ScheduleResultViewProp
   )
 }
 
-function ScheduleResultView({ result, onBack }: ScheduleResultViewProps) {
+function ScheduleResultView({
+  result,
+  onBack,
+  onExportExcel,
+  isExcelExporting,
+  excelMessage,
+}: ScheduleResultViewProps) {
+  const resultViewProps = {
+    result,
+    onBack,
+    onExportExcel,
+    isExcelExporting,
+    excelMessage,
+  }
+
   if (result.courtCount === 1) {
-    return <OneCourtScheduleResultView result={result} onBack={onBack} />
+    return <OneCourtScheduleResultView {...resultViewProps} />
   }
 
   if (result.courtCount === 3 || result.courtCount === 4) {
-    return <MultiCourtScheduleResultView result={result} onBack={onBack} />
+    return <MultiCourtScheduleResultView {...resultViewProps} />
   }
 
-  return <TwoCourtScheduleResultView result={result} onBack={onBack} />
+  return <TwoCourtScheduleResultView {...resultViewProps} />
 }
 
 function App() {
@@ -538,7 +623,9 @@ function App() {
   }))
   const [scheduleResult, setScheduleResult] = useState<ScheduleGenerationResult | null>(null)
   const [formMessage, setFormMessage] = useState<string | null>(null)
+  const [excelMessage, setExcelMessage] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isExcelExporting, setIsExcelExporting] = useState(false)
 
   const enteredTeamCount = useMemo(
     () => setup.teamNames.filter((teamName) => teamName.trim().length > 0).length,
@@ -642,6 +729,7 @@ function App() {
       }
 
       setFormMessage(null)
+      setExcelMessage(null)
       setScheduleResult(nextSchedule)
     } catch (error) {
       setScheduleResult(null)
@@ -666,9 +754,29 @@ function App() {
     })
   }
 
+  const handleExcelExport = async () => {
+    if (scheduleResult === null || isExcelExporting) {
+      return
+    }
+
+    setExcelMessage(null)
+    setIsExcelExporting(true)
+
+    try {
+      await waitForNextFrame()
+      await exportScheduleToExcel(scheduleResult)
+    } catch (error) {
+      console.error('Excel export failed', error)
+      setExcelMessage('Excelファイルを作成できませんでした。もう一度お試しください。')
+    } finally {
+      setIsExcelExporting(false)
+    }
+  }
+
   const handleBackToForm = () => {
     setScheduleResult(null)
     setFormMessage(null)
+    setExcelMessage(null)
   }
 
   return (
@@ -691,7 +799,13 @@ function App() {
         </section>
 
         {scheduleResult ? (
-          <ScheduleResultView result={scheduleResult} onBack={handleBackToForm} />
+          <ScheduleResultView
+            excelMessage={excelMessage}
+            isExcelExporting={isExcelExporting}
+            result={scheduleResult}
+            onBack={handleBackToForm}
+            onExportExcel={handleExcelExport}
+          />
         ) : (
           <form className="setup-panel" onSubmit={handleSubmit} aria-busy={isGenerating}>
             <section className="form-section" aria-labelledby="basic-settings-title">
@@ -838,7 +952,7 @@ function App() {
         <footer className="app-footer screen-only">
           <span>
             ご意見・不具合報告：
-            <a href={X_PROFILE_URL} target="_blank" rel="noreferrer">@kumasansofttouch</a>
+            <a href={X_PROFILE_URL} target="_blank" rel="noreferrer">kumasansofttouch</a>
           </span>
           <a className="share-link" href={createXShareUrl()} target="_blank" rel="noreferrer">
             Xで共有

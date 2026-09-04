@@ -167,6 +167,7 @@ h3 {
   font-weight: 700;
 }
 
+.excel-button,
 .print-button,
 .secondary-button {
   flex: 0 0 auto;
@@ -180,12 +181,25 @@ h3 {
   font-weight: 700;
 }
 
+.excel-button:hover,
+.excel-button:focus-visible,
 .print-button:hover,
 .print-button:focus-visible,
 .secondary-button:hover,
 .secondary-button:focus-visible {
   background: #eef8f4;
   border-color: #13745f;
+}
+
+.excel-button:disabled {
+  cursor: wait;
+  color: #6f9087;
+  background: #f4faf7;
+  border-color: #cbd9d3;
+}
+
+.result-message {
+  margin: -10px 0 0;
 }
 
 .schedule-table-wrap {
@@ -581,8 +595,18 @@ button:focus-visible {
     padding: 18px;
   }
 
+  .result-actions {
+    justify-content: stretch;
+  }
+
+  .output-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+  .excel-button,
   .print-button,
-.secondary-button {
+  .secondary-button {
     width: 100%;
   }
 
@@ -600,6 +624,7 @@ button:focus-visible {
   }
 
   .primary-button,
+  .excel-button,
   .print-button {
     width: 100%;
   }
