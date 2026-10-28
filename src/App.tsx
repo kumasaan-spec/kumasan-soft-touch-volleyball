@@ -789,9 +789,9 @@ function App() {
 
       <main className="app-main">
         <section className="title-section" aria-labelledby="page-title">
-          <p className="eyebrow">小・中・高校の練習試合に</p>
+          <p className="eyebrow">スポ少・小学生・中学生・高校生のバレー練習試合に</p>
           <h1 id="page-title">練習試合 組み合わせ作成</h1>
-          <p className="lead">ログインなしですぐ使えます。コート数、チーム数、周回数を入力して準備を始めます。</p>
+          <p className="lead">ログインなしですぐ使えます。バレーボールの練習試合用組み合わせを自動作成。1～4コート・複数周に対応し、休憩・連続試合・再戦間隔を考慮。対戦表は印刷・Excel出力できます。</p>
           <div className="alpha-note screen-only">
             <span>α版</span>
             <p>現在α版です。生成結果は利用前にご確認ください。</p>

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://kumasan-soft-touch-volleyball.kumasaan.workers.dev/sitemap.xml
